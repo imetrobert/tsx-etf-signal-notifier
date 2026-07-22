@@ -7,8 +7,8 @@ reasoning and a historical hold-time estimate.
 
 **This tool never places trades.** It is strictly informational.
 
-- **Live site**: https://imetrobert.github.io/tsx-etf-signal-notifier/
-  (final home: https://invest.imetrobert.com)
+- **Live site**: https://invest.imetrobert.com
+  (imetrobert.github.io/tsx-etf-signal-notifier redirects there)
 - **Login**: shared Supabase Auth account — same email/password as the
   invoicing app and claims tracker.
 
@@ -102,5 +102,5 @@ rest; the daily job writes via the service-role key.
 1. DNS: `invest` CNAME → `imetrobert.github.io.` at the domain provider
 2. Repo Settings → Pages → Custom domain: `invest.imetrobert.com`, then
    Enforce HTTPS once the certificate is issued
-3. `vite.config.js` base must be `'/'` for the custom domain (it is
-   `/tsx-etf-signal-notifier/` while on github.io)
+3. `vite.config.js` base must be `'/'` for the custom domain (done). If the
+   custom domain is ever removed, set it back to `'/tsx-etf-signal-notifier/'`.

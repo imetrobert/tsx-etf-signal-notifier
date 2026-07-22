@@ -159,7 +159,7 @@ async function sendEmail(signals) {
       ${s.reasons}<br/>
       <em>${s.est}</em>
     </div>`
-  ).join('') + `<p style="color:#888;font-size:12px">Notification only — no trades are ever placed. Details: https://imetrobert.github.io/tsx-etf-signal-notifier/</p>`
+  ).join('') + `<p style="color:#888;font-size:12px">Notification only — no trades are ever placed. Details: https://invest.imetrobert.com/</p>`
 
   const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
     method: 'POST',
