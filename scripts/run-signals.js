@@ -233,6 +233,15 @@ async function main() {
     }
   }
 
+  if (process.env.TEST_EMAIL === 'true' && fired.length === 0) {
+    console.log('TEST_EMAIL requested — sending a sample alert.')
+    fired.push({
+      ticker: 'TEST.TO', dir: 'BUY', price: 12.34,
+      reasons: 'Signal for TEST.TO: this is a test alert to confirm email delivery works. No real signal fired.',
+      est: 'If you can read this, notifications are configured correctly.',
+    })
+  }
+
   if (fired.length) await sendEmail(fired)
   else console.log('No new signals today.')
 
