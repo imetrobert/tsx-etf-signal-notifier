@@ -67,7 +67,13 @@ export default function Dashboard() {
   })
   const total = rows.reduce((s, r) => s + (r.value ?? 0), 0)
   const anyPrice = rows.some(r => r.price != null)
-  const latestDate = Object.values(prices).map(p => p.price_date).sort().pop()
+  const lastUpdated = Object.values(prices).map(p => p.updated_at).sort().pop()
+  const lastUpdatedText = lastUpdated
+    ? new Date(lastUpdated).toLocaleString('en-CA', {
+        timeZone: 'America/Toronto',
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+      })
+    : null
 
   return (
     <>
@@ -153,7 +159,7 @@ export default function Dashboard() {
                 <div className="total-line">
                   <div>
                     <div className="field-label" style={{ margin: 0 }}>Portfolio value</div>
-                    {latestDate && <span className="muted">prices as of {latestDate}</span>}
+                    {lastUpdatedText && <span className="muted">prices updated {lastUpdatedText}</span>}
                   </div>
                   <span className="amt">{fmtCad.format(total)}</span>
                 </div>

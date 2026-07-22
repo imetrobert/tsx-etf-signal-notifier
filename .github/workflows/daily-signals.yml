@@ -2,7 +2,9 @@ name: Daily ETF signals
 
 on:
   schedule:
-    # 21:30 UTC ≈ 4:30–5:30pm Toronto depending on DST — after TSX close, weekdays
+    # Hourly through the TSX trading day (13:00–21:00 UTC ≈ 9am–5pm Toronto), weekdays
+    - cron: '0 13-21 * * 1-5'
+    # Final after-close run, 21:30 UTC ≈ 4:30–5:30pm Toronto depending on DST
     - cron: '30 21 * * 1-5'
   workflow_dispatch:
     inputs:

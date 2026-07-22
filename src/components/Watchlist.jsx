@@ -102,6 +102,15 @@ export default function Watchlist() {
           )}
           <div className="muted" style={{ marginTop: 10 }}>
             Your holdings are always monitored for signals — this list adds extra ETFs on top.
+            {(() => {
+              const last = Object.values(prices).map(p => p.updated_at).sort().pop()
+              return last
+                ? ` Prices updated ${new Date(last).toLocaleString('en-CA', {
+                    timeZone: 'America/Toronto',
+                    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+                  })}.`
+                : ''
+            })()}
           </div>
         </div>
       </main>

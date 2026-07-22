@@ -14,8 +14,9 @@ reasoning and a historical hold-time estimate.
 
 ## How signals work
 
-The daily job (weekdays ~5:30pm Toronto, after TSX close) evaluates every
-ticker in your holdings + watchlist:
+The signal job runs hourly through the trading day (weekdays ~9am–5pm
+Toronto) plus a final after-close run, evaluating every ticker in your
+holdings + watchlist:
 
 | Indicator | Rule | Alert |
 |---|---|---|
