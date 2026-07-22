@@ -27,10 +27,10 @@ export default function App() {
 
   if (!isConfigured) {
     return (
-      <div className="login-page">
+      <div className="login-wrap">
         <div className="login-card">
-          <h1 className="login-title">ETF Signals</h1>
-          <p className="login-subtitle">
+          <h1>ETF Signals</h1>
+          <p className="muted">
             Deployment succeeded, but the Supabase secrets (VITE_SUPABASE_URL and
             VITE_SUPABASE_ANON_KEY) are not set yet. Add them in the repo's
             Settings → Secrets and variables → Actions, then re-run the deploy.

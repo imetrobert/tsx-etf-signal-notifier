@@ -17,48 +17,34 @@ export default function Login() {
   }
 
   return (
-    <div className="login-page">
+    <div className="login-wrap">
       <div className="login-card">
-        <img
-          src="https://aiwithrobert.com/logo.PNG"
-          alt="AI with Robert"
-          className="login-logo"
-          onError={e => { e.target.style.display = 'none' }}
-        />
-        <h1 className="login-title">AI with Robert</h1>
-        <p className="login-subtitle">ETF Signals — Secure Access</p>
-
-        {error && <div className="login-error">{error}</div>}
+        <div className="brand">imetrobert</div>
+        <h1>ETF Signals</h1>
+        <div className="muted">Private TSX ETF signal notifier</div>
 
         <form onSubmit={handleLogin}>
-          <div className="form-group">
-            <label className="form-label">Email</label>
-            <input
-              type="email"
-              className="form-control"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              required
-              autoComplete="email"
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Password</label>
-            <input
-              type="password"
-              className="form-control"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              placeholder="••••••••"
-              required
-              autoComplete="current-password"
-            />
-          </div>
-          <button type="submit" className="btn btn-navy" style={{ width: '100%', justifyContent: 'center', marginTop: 4 }} disabled={loading}>
-            {loading ? 'Signing in…' : 'Sign In'}
+          <input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            placeholder="Email"
+            required
+            autoComplete="username"
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="Password"
+            required
+            autoComplete="current-password"
+          />
+          <button type="submit" className="btn" disabled={loading}>
+            {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
+        {error && <div className="err">{error}</div>}
       </div>
     </div>
   )
