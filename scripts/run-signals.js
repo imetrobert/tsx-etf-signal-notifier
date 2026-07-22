@@ -141,9 +141,103 @@ function evaluate(ticker, ind, lastState, series) {
   return { stateKey, signal: { dir, reasons, est } }
 }
 
+// ---------- market regime (macro layer) ----------
+// Three free official gauges; each failure degrades gracefully to "unavailable".
+
+async function fetchMarketRegime() {
+  const gauges = []
+  let flags = 0
+
+  // 1. Canada yield curve: 10y minus 2y benchmark yields (Bank of Canada Valet API)
+  try {
+    const r = await fetch('https://www.bankofcanada.ca/valet/observations/BD.CDN.2YR.DQ.YLD,BD.CDN.10YR.DQ.YLD/json?recent=10')
+    const j = await r.json()
+    const obs = (j.observations || []).filter(o => o['BD.CDN.2YR.DQ.YLD']?.v && o['BD.CDN.10YR.DQ.YLD']?.v)
+    const last = obs[obs.length - 1]
+    const spread = parseFloat(last['BD.CDN.10YR.DQ.YLD'].v) - parseFloat(last['BD.CDN.2YR.DQ.YLD'].v)
+    const inverted = spread < 0
+    if (inverted) flags++
+    gauges.push({
+      name: 'Canada yield curve (10y−2y)',
+      value: `${spread >= 0 ? '+' : ''}${spread.toFixed(2)} pts`,
+      status: inverted ? 'INVERTED — has historically led recessions by 6–18 months' : 'normal shape',
+      warn: inverted,
+    })
+  } catch (e) {
+    gauges.push({ name: 'Canada yield curve (10y−2y)', value: 'unavailable', status: e.message, warn: false })
+  }
+
+  // 2. US high-yield credit spreads (FRED BAMLH0A0HYM2): stress when high or widening fast
+  try {
+    const csv = await (await fetch('https://fred.stlouisfed.org/graph/fredgraph.csv?id=BAMLH0A0HYM2')).text()
+    const rows = csv.trim().split('\n').slice(1).map(l => l.split(',')).filter(r => r[1] && r[1] !== '.')
+    const latest = parseFloat(rows[rows.length - 1][1])
+    const threeMonthsAgo = parseFloat(rows[Math.max(0, rows.length - 64)][1])
+    const elevated = latest >= 5
+    const widening = latest - threeMonthsAgo >= 0.75
+    if (elevated || widening) flags++
+    gauges.push({
+      name: 'US high-yield credit spreads',
+      value: `${latest.toFixed(2)}%`,
+      status: elevated ? 'ELEVATED — credit markets pricing meaningful stress'
+        : widening ? `WIDENING fast (+${(latest - threeMonthsAgo).toFixed(2)} pts in ~3 months) — early risk-off tell`
+        : 'calm',
+      warn: elevated || widening,
+    })
+  } catch (e) {
+    gauges.push({ name: 'US high-yield credit spreads', value: 'unavailable', status: e.message, warn: false })
+  }
+
+  // 3. Sahm Rule recession indicator (FRED SAHMREALTIME): triggered at >= 0.50
+  try {
+    const csv = await (await fetch('https://fred.stlouisfed.org/graph/fredgraph.csv?id=SAHMREALTIME')).text()
+    const rows = csv.trim().split('\n').slice(1).map(l => l.split(',')).filter(r => r[1] && r[1] !== '.')
+    const latest = parseFloat(rows[rows.length - 1][1])
+    const triggered = latest >= 0.5
+    if (triggered) flags++
+    gauges.push({
+      name: 'Sahm Rule (US recession indicator)',
+      value: latest.toFixed(2),
+      status: triggered ? 'TRIGGERED — historically a reliable recession start marker' : 'not triggered',
+      warn: triggered,
+    })
+  } catch (e) {
+    gauges.push({ name: 'Sahm Rule (US recession indicator)', value: 'unavailable', status: e.message, warn: false })
+  }
+
+  const level = flags >= 2 ? 'CAUTION' : flags === 1 ? 'WATCH' : 'NORMAL'
+  return { level, flags, gauges }
+}
+
+function regimeNote(dir, level) {
+  if (level === 'CAUTION') {
+    return dir === 'BUY'
+      ? 'Macro regime is CAUTION — dips can deepen in this environment; consider staging in rather than buying all at once.'
+      : 'Macro regime is CAUTION — adds conviction to trimming.'
+  }
+  if (level === 'WATCH') {
+    return dir === 'BUY'
+      ? 'Macro regime is WATCH — one caution gauge is flashing; a somewhat riskier backdrop for dip-buying.'
+      : 'Macro regime is WATCH — mildly supportive of trimming.'
+  }
+  return dir === 'BUY'
+    ? 'Macro regime is NORMAL — supportive backdrop for buying this dip.'
+    : 'Macro regime is NORMAL — no macro urgency behind this trim signal.'
+}
+
+function regimeHtml(regime) {
+  const rows = regime.gauges.map(g =>
+    `<li><strong>${g.name}</strong>: ${g.value} — ${g.warn ? '<span style="color:#b5502f">' + g.status + '</span>' : g.status}</li>`
+  ).join('')
+  return `<div style="margin-top:16px;padding-top:10px;border-top:1px solid #ddd">
+    <strong>Market regime: ${regime.level}</strong>
+    <ul style="margin:6px 0 0 18px;padding:0">${rows}</ul>
+  </div>`
+}
+
 // ---------- email ----------
 
-async function sendEmail(signals) {
+async function sendEmail(signals, regime, regimeChange) {
   const { EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, EMAILJS_PUBLIC_KEY, EMAILJS_PRIVATE_KEY, NOTIFY_EMAIL } = process.env
   if (!EMAILJS_SERVICE_ID || !EMAILJS_TEMPLATE_ID || !EMAILJS_PUBLIC_KEY || !EMAILJS_PRIVATE_KEY || !NOTIFY_EMAIL) {
     console.log('EmailJS not configured — skipping email (signals are still logged in the app).')
@@ -151,15 +245,31 @@ async function sendEmail(signals) {
   }
   const buys = signals.filter(s => s.dir === 'BUY').length
   const sells = signals.length - buys
-  const subject = `ETF Signals: ${buys ? `${buys} BUY` : ''}${buys && sells ? ', ' : ''}${sells ? `${sells} SELL/TRIM` : ''}`
-  const content = signals.map(s =>
+  const parts = []
+  if (buys) parts.push(`${buys} BUY`)
+  if (sells) parts.push(`${sells} SELL/TRIM`)
+  if (regimeChange) parts.push(`market regime now ${regimeChange.to}`)
+  const subject = `ETF Signals: ${parts.join(', ')}`
+
+  const regimeChangeBlock = regimeChange
+    ? `<div style="margin-bottom:18px">
+        <strong>Market regime changed: ${regimeChange.from} → ${regimeChange.to}</strong><br/>
+        The macro backdrop shifted (details below). ${regimeChange.to === 'NORMAL'
+          ? 'Conditions have normalized.'
+          : 'No action required — but treat new BUY-dip signals with extra care and SELL/trim signals with extra weight while this persists.'}
+      </div>`
+    : ''
+
+  const content = regimeChangeBlock + signals.map(s =>
     `<div style="margin-bottom:18px">
       <strong>${s.ticker.replace('.TO', '')} — ${s.dir === 'BUY' ? 'BUY' : 'SELL / TRIM'}</strong>
       (${s.price.toFixed(2)} CAD)<br/>
       ${s.reasons}<br/>
-      <em>${s.est}</em>
+      <em>${s.est}</em><br/>
+      <span style="color:#555">${regimeNote(s.dir, regime.level)}</span>
     </div>`
-  ).join('') + `<p style="color:#888;font-size:12px">Notification only — no trades are ever placed. Details: https://invest.imetrobert.com/</p>`
+  ).join('') + regimeHtml(regime)
+    + `<p style="color:#888;font-size:12px;margin-top:14px">Notification only — no trades are ever placed. Details: https://invest.imetrobert.com/</p>`
 
   const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
     method: 'POST',
@@ -189,6 +299,23 @@ async function main() {
   const tickers = [...new Set([...holdings.data, ...watchlist.data].map(r => r.ticker))]
   const lastStates = Object.fromEntries(states.data.map(r => [r.ticker, r.last_state]))
   console.log(`Evaluating ${tickers.length} tickers: ${tickers.join(', ')}`)
+
+  const regime = await fetchMarketRegime()
+  console.log(`Market regime: ${regime.level} (${regime.flags} caution flag(s))`)
+  for (const g of regime.gauges) console.log(`  ${g.name}: ${g.value} — ${g.status}`)
+
+  const priorRegime = lastStates['_MARKET_REGIME'] ?? null
+  const regimeChange = priorRegime && priorRegime !== regime.level
+    ? { from: priorRegime, to: regime.level }
+    : null
+  const { error: rStateErr } = await db.from('etf_signal_state').upsert({
+    ticker: '_MARKET_REGIME', last_state: regime.level, updated_at: new Date().toISOString(),
+  })
+  if (rStateErr) console.error(`regime state save failed: ${rStateErr.message}`)
+  const { error: rErr } = await db.from('etf_market_regime').upsert({
+    id: 1, level: regime.level, gauges: regime.gauges, updated_at: new Date().toISOString(),
+  })
+  if (rErr) console.error(`regime save failed (run supabase/schema.sql to add the table): ${rErr.message}`)
 
   const fired = []
   const failures = []
@@ -242,7 +369,7 @@ async function main() {
     })
   }
 
-  if (fired.length) await sendEmail(fired)
+  if (fired.length || regimeChange) await sendEmail(fired, regime, regimeChange)
   else console.log('No new signals today.')
 
   if (failures.length === tickers.length && tickers.length > 0) {

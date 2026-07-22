@@ -25,6 +25,14 @@ holdings + watchlist:
 | Stretch | Price drops to **10%+ below** its 200-day MA | BUY (dip) |
 | Stretch | Price rises to **10%+ above** its 200-day MA | SELL/TRIM |
 
+**Market-regime layer**: every run also checks three free official macro
+gauges — the Canadian 10y−2y yield curve (Bank of Canada Valet API), US
+high-yield credit spreads and the Sahm recession indicator (FRED). Two or
+more flashing = CAUTION, one = WATCH, none = NORMAL. The level is shown on
+the dashboard, appended to every alert email (adjusting BUY/SELL conviction
+wording), stored in `etf_market_regime`, and a **regime level change
+triggers its own email**.
+
 Alerts fire only on **state changes** — one email per new condition, never
 repeats while the condition persists. The first-ever run only records a
 baseline. BUY alerts include a hold-time estimate from that ETF's own

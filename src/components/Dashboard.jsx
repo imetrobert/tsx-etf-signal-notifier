@@ -6,6 +6,7 @@ import Navbar from './Navbar'
 export default function Dashboard() {
   const [holdings, setHoldings] = useState([])
   const [prices, setPrices] = useState({})
+  const [regime, setRegime] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [ticker, setTicker] = useState('')
@@ -16,12 +17,14 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     setError('')
-    const [h, p] = await Promise.all([
+    const [h, p, r] = await Promise.all([
       supabase.from('etf_holdings').select('*').order('ticker'),
       supabase.from('etf_prices').select('*'),
+      supabase.from('etf_market_regime').select('*').maybeSingle(),
     ])
     if (h.error) { setError(h.error.message); setLoading(false); return }
     setHoldings(h.data || [])
+    if (!r.error && r.data) setRegime(r.data)
     const priceMap = {}
     for (const row of p.data || []) priceMap[row.ticker] = row
     setPrices(priceMap)
@@ -79,6 +82,25 @@ export default function Dashboard() {
     <>
       <Navbar subtitle="Notification-only — never places trades" />
       <main>
+        {regime && (
+          <div className="card">
+            <h2 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              Market regime
+              <span className={`tag ${regime.level === 'NORMAL' ? 'buy' : regime.level === 'WATCH' ? 'watch' : 'sell'}`}>
+                {regime.level}
+              </span>
+            </h2>
+            {(regime.gauges || []).map((g, i) => (
+              <div key={i} style={{ padding: '6px 0', borderBottom: i < regime.gauges.length - 1 ? '1px solid var(--ledger-line)' : 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontSize: 13 }}>{g.name}</span>
+                  <span className="ticker" style={{ whiteSpace: 'nowrap' }}>{g.value}</span>
+                </div>
+                <div className="muted" style={{ color: g.warn ? 'var(--accent)' : undefined }}>{g.status}</div>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="card">
           <h2>Add holding</h2>
           <form className="form-row" onSubmit={addHolding}>

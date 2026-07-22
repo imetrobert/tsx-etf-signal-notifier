@@ -77,6 +77,19 @@ drop policy if exists "etf_signal_state_read" on etf_signal_state;
 create policy "etf_signal_state_read" on etf_signal_state
   for select to authenticated using (true);
 
+-- Macro market-regime snapshot (yield curve, credit spreads, Sahm rule),
+-- refreshed by the signal job. Single row.
+create table if not exists etf_market_regime (
+  id int primary key default 1 check (id = 1),
+  level text not null,
+  gauges jsonb,
+  updated_at timestamptz not null default now()
+);
+alter table etf_market_regime enable row level security;
+drop policy if exists "etf_regime_read" on etf_market_regime;
+create policy "etf_regime_read" on etf_market_regime
+  for select to authenticated using (true);
+
 -- Starter watchlist of popular TSX ETFs (editable in the app).
 insert into etf_watchlist (ticker) values
   ('XEQT.TO'), ('VEQT.TO'), ('XIC.TO'), ('VFV.TO'),
