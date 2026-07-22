@@ -1,0 +1,34 @@
+name: Diagnose live site
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe URLs
+        run: |
+          for url in \
+            "https://imetrobert.github.io/tsx-etf-signal-notifier/" \
+            "https://www.imetrobert.com/tsx-etf-signal-notifier/" ; do
+            echo "===================================================="
+            echo "URL: $url"
+            echo "--- redirect chain ---"
+            curl -sSIL -o /dev/null -w "%{http_code} %{url_effective}\n" "$url" || true
+            echo "--- first 1500 bytes of body ---"
+            curl -sSL "$url" | head -c 1500 || true
+            echo
+          done
+          echo "===================================================="
+          echo "--- asset check: extract script src from served HTML and fetch it ---"
+          HTML=$(curl -sSL "https://www.imetrobert.com/tsx-etf-signal-notifier/")
+          SRC=$(echo "$HTML" | grep -o 'src="[^"]*"' | head -1 | sed 's/src="//;s/"//')
+          echo "script src: $SRC"
+          case "$SRC" in
+            /*) FULL="https://www.imetrobert.com$SRC" ;;
+            http*) FULL="$SRC" ;;
+            *) FULL="https://www.imetrobert.com/tsx-etf-signal-notifier/$SRC" ;;
+          esac
+          echo "fetching: $FULL"
+          curl -sSL -o /dev/null -w "asset status: %{http_code}, bytes: %{size_download}\n" "$FULL" || true
