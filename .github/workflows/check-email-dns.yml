@@ -1,0 +1,29 @@
+name: Check email DNS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check SPF / DKIM / DMARC for aiwithrobert.com
+        run: |
+          echo "=== SPF (TXT aiwithrobert.com) ==="
+          dig +short TXT aiwithrobert.com
+          echo "=== DMARC (TXT _dmarc.aiwithrobert.com) ==="
+          dig +short TXT _dmarc.aiwithrobert.com
+          echo "=== Brevo DKIM key 1 (brevo1._domainkey) ==="
+          dig +short CNAME brevo1._domainkey.aiwithrobert.com
+          dig +short TXT brevo1._domainkey.aiwithrobert.com
+          echo "=== Brevo DKIM key 2 (brevo2._domainkey) ==="
+          dig +short CNAME brevo2._domainkey.aiwithrobert.com
+          dig +short TXT brevo2._domainkey.aiwithrobert.com
+          echo "=== Legacy Brevo/Sendinblue DKIM (mail._domainkey) ==="
+          dig +short TXT mail._domainkey.aiwithrobert.com
+          echo "=== MX records ==="
+          dig +short MX aiwithrobert.com
+          echo "=== Comparison: imetrobert.com SPF ==="
+          dig +short TXT imetrobert.com
+          echo "=== Comparison: imetrobert.com DMARC ==="
+          dig +short TXT _dmarc.imetrobert.com
