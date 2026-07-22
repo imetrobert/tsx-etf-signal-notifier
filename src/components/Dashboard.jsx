@@ -100,9 +100,11 @@ export default function Dashboard() {
             <div className="empty">No holdings yet — add your first ETF above.</div>
           ) : (
             <>
-              {!anyPrice && (
+              {rows.some(r => r.price == null) && (
                 <div className="notice">
-                  Prices appear after the first signal run fetches market data — coming in the next build stage.
+                  Tickers showing “—” were added since the last signal run. Prices
+                  fill in on the next run (weekdays after market close), or run
+                  “Daily ETF signals” manually in GitHub Actions.
                 </div>
               )}
               <div className="table-wrap">
