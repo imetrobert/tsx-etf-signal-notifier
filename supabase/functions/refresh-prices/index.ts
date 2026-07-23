@@ -29,12 +29,28 @@ function sma(values: number[], n: number): number | null {
   return s / n
 }
 
-// Supports both the legacy key model (SUPABASE_ANON_KEY /
-// SUPABASE_SERVICE_ROLE_KEY) and the newer publishable/secret key model.
-function envAny(...names: string[]): string | undefined {
-  for (const n of names) {
+// Resolves an API key across all three env shapes Supabase uses:
+// legacy singular strings (SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY),
+// new-model singular strings (SUPABASE_PUBLISHABLE_KEY / SUPABASE_SECRET_KEY,
+// used by local dev), and new-model plural JSON objects keyed by key name
+// (SUPABASE_PUBLISHABLE_KEYS / SUPABASE_SECRET_KEYS, e.g.
+// {"default":"sb_secret_..."}).
+function resolveKey(singulars: string[], plural: string): string | undefined {
+  for (const n of singulars) {
     const v = Deno.env.get(n)
     if (v) return v
+  }
+  const raw = Deno.env.get(plural)
+  if (!raw) return undefined
+  try {
+    const obj = JSON.parse(raw)
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      if (typeof obj.default === 'string') return obj.default
+      const first = Object.values(obj).find(v => typeof v === 'string')
+      if (typeof first === 'string') return first
+    }
+  } catch {
+    return raw // not JSON — treat the value as the key itself
   }
   return undefined
 }
@@ -43,10 +59,10 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
   const url = Deno.env.get('SUPABASE_URL')!
-  const anonKey = envAny('SUPABASE_ANON_KEY', 'SUPABASE_PUBLISHABLE_KEY')
-  const secretKey = envAny('SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY')
+  const anonKey = resolveKey(['SUPABASE_ANON_KEY', 'SUPABASE_PUBLISHABLE_KEY'], 'SUPABASE_PUBLISHABLE_KEYS')
+  const secretKey = resolveKey(['SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_SECRET_KEY'], 'SUPABASE_SECRET_KEYS')
   if (!anonKey || !secretKey) {
-    return json({ error: 'Missing key env vars — add a function secret named SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY) and SUPABASE_ANON_KEY (or SUPABASE_PUBLISHABLE_KEY).' }, 500)
+    return json({ error: 'Missing key env vars — expected SUPABASE_ANON_KEY + SUPABASE_SERVICE_ROLE_KEY (legacy) or SUPABASE_PUBLISHABLE_KEY(S) + SUPABASE_SECRET_KEY(S) (new key model).' }, 500)
   }
 
   // Only a signed-in app user may trigger a refresh (the platform JWT check
