@@ -34,11 +34,13 @@ export default function Dashboard() {
   const [shares, setShares] = useState('')
   const [account, setAccount] = useState('TFSA')
   const [institution, setInstitution] = useState('WEALTHSIMPLE')
+  const [fundName, setFundName] = useState('')
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [editShares, setEditShares] = useState('')
   const [editAccount, setEditAccount] = useState('NON_REG')
   const [editInstitution, setEditInstitution] = useState('WEALTHSIMPLE')
+  const [editFundName, setEditFundName] = useState('')
   const [acctFilter, setAcctFilter] = useState('ALL')
   const [instFilter, setInstFilter] = useState('ALL')
 
@@ -83,9 +85,9 @@ export default function Dashboard() {
     setError('')
     const { error } = await supabase
       .from('etf_holdings')
-      .upsert({ ticker: sym, shares: qty, account, institution }, { onConflict: 'ticker,account,institution' })
+      .upsert({ ticker: sym, shares: qty, account, institution, fund_name: fundName.trim() || null }, { onConflict: 'ticker,account,institution' })
     if (error) setError(error.message)
-    else { setTicker(''); setShares(''); await load() }
+    else { setTicker(''); setShares(''); setFundName(''); await load() }
     setSaving(false)
   }
 
@@ -94,7 +96,10 @@ export default function Dashboard() {
     if (!(qty > 0)) return
     const { error } = await supabase
       .from('etf_holdings')
-      .update({ shares: qty, account: editAccount, institution: editInstitution, updated_at: new Date().toISOString() })
+      .update({
+        shares: qty, account: editAccount, institution: editInstitution,
+        fund_name: editFundName.trim() || null, updated_at: new Date().toISOString(),
+      })
       .eq('id', id)
     if (error) setError(error.message)
     setEditingId(null)
@@ -184,12 +189,18 @@ export default function Dashboard() {
                 {INSTITUTIONS.map(i => <option key={i.code} value={i.code}>{i.label}</option>)}
               </select>
             </div>
+            <div>
+              <label className="field-label">Fund name (optional)</label>
+              <input value={fundName} onChange={e => setFundName(e.target.value)} placeholder="e.g. CI Precious Metals F" />
+            </div>
             <button className="btn" type="submit" disabled={saving}>{saving ? 'Adding…' : 'Add'}</button>
           </form>
           <div className="muted" style={{ marginTop: 8 }}>
             Plain tickers get the TSX suffix automatically (XEQT → XEQT.TO). Re-adding a
             ticker in the same account updates its share count. Signal advice assumes your
-            TFSA and RRSP are maxed out (sell-to-buy in registered accounts).
+            TFSA and RRSP are maxed out (sell-to-buy in registered accounts). Fund name is
+            worth filling in for Manulife mutual funds — their tickers are cryptic codes,
+            and the name is used in the advisor email draft on the Signals tab.
           </div>
           {error && <div className="err">{error}</div>}
         </div>
@@ -253,7 +264,22 @@ export default function Dashboard() {
                   <tbody>
                     {shownRows.map(r => (
                       <tr key={r.id}>
-                        <td><span className="ticker">{displayTicker(r.ticker)}</span></td>
+                        <td>
+                          {editingId === r.id ? (
+                            <input
+                              style={{ fontSize: 13, padding: '4px 6px', marginBottom: 4 }}
+                              value={editFundName}
+                              onChange={e => setEditFundName(e.target.value)}
+                              placeholder="Fund name (optional)"
+                            />
+                          ) : r.fund_name ? (
+                            <>
+                              {r.fund_name}<br /><span className="muted">{displayTicker(r.ticker)}</span>
+                            </>
+                          ) : (
+                            <span className="ticker">{displayTicker(r.ticker)}</span>
+                          )}
+                        </td>
                         <td>
                           {editingId === r.id ? (
                             <select
@@ -297,7 +323,7 @@ export default function Dashboard() {
                           {editingId === r.id ? (
                             <button className="btn small" onClick={() => saveEdit(r.id)}>Save</button>
                           ) : (
-                            <button className="btn small secondary" onClick={() => { setEditingId(r.id); setEditShares(String(r.shares)); setEditAccount(r.account || 'NON_REG'); setEditInstitution(r.institution || 'WEALTHSIMPLE') }}>Edit</button>
+                            <button className="btn small secondary" onClick={() => { setEditingId(r.id); setEditShares(String(r.shares)); setEditAccount(r.account || 'NON_REG'); setEditInstitution(r.institution || 'WEALTHSIMPLE'); setEditFundName(r.fund_name || '') }}>Edit</button>
                           )}
                           {' '}
                           <button className="btn small warn" onClick={() => remove(r.id, r.ticker, r.account)}>✕</button>

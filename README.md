@@ -48,7 +48,16 @@ using the taxable non-registered account; SELL alerts spell out the tax
 consequences per account (TFSA sales are tax-free dry powder, RRSP proceeds
 should stay inside the account, non-registered sales can realize capital
 gains). The advice is stored with each signal and shown in the Signals tab
-and alert emails. A **↻ Refresh** button in the header fetches live prices
+and alert emails. Signals on a Manulife Wealth holding show a **✉ Draft
+email to Brad** button in the Signals tab — it generates a copy-pasteable
+subject/body summarizing the signal, the reasoning, and the account
+advice, so you can forward it to your advisor and ask for their take
+before acting. Add an optional **fund name** when adding/editing a
+Manulife holding (their tickers are cryptic Morningstar/FundSERV codes) —
+it's used in the email draft and shown in the holdings table instead of
+the raw ticker.
+
+A **↻ Refresh** button in the header fetches live prices
 on demand via the `refresh-prices` Supabase Edge Function
 (`supabase/functions/refresh-prices/index.ts` — deploy it once in the
 Supabase dashboard under Edge Functions, named exactly `refresh-prices`,

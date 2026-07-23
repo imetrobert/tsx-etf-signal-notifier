@@ -12,10 +12,12 @@ create table if not exists etf_holdings (
     constraint etf_holdings_account_chk check (account in ('RRSP','TFSA','NON_REG','LIRA')),
   institution text not null default 'WEALTHSIMPLE'
     constraint etf_holdings_institution_chk check (institution in ('WEALTHSIMPLE','MANULIFE')),
+  fund_name text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint etf_holdings_ticker_acct_inst_key unique (ticker, account, institution)
 );
+alter table etf_holdings add column if not exists fund_name text;
 
 -- Migration for installs created before per-account / per-institution
 -- holdings existed: add the columns, move uniqueness to
