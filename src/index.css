@@ -127,6 +127,15 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
 .tag.watch { background: var(--warn-soft); color: var(--warn); }
 .tag.acct { background: #e8e6df; color: #5d5949; font-size: 10px; }
 
+/* ── Account filter pills ── */
+.filter-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.filter-btn {
+  font-family: var(--sans); font-size: 12px; font-weight: 600;
+  padding: 5px 12px; border-radius: 20px; cursor: pointer;
+  background: #fff; border: 1px solid var(--ledger-line); color: var(--muted);
+}
+.filter-btn.active { background: var(--ledger); border-color: var(--ledger); color: #fff; }
+
 .muted { color: var(--muted); font-size: 12.5px; }
 .err { color: var(--accent); font-size: 13px; margin-top: 8px; }
 .notice {

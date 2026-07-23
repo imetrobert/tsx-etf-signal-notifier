@@ -25,6 +25,7 @@ export default function Dashboard() {
   const [editingId, setEditingId] = useState(null)
   const [editShares, setEditShares] = useState('')
   const [editAccount, setEditAccount] = useState('NON_REG')
+  const [acctFilter, setAcctFilter] = useState('ALL')
 
   const load = useCallback(async () => {
     setError('')
@@ -96,8 +97,9 @@ export default function Dashboard() {
     const p = prices[h.ticker]
     return { ...h, price: p?.price ?? null, priceDate: p?.price_date ?? null, value: p?.price != null ? p.price * h.shares : null }
   })
-  const total = rows.reduce((s, r) => s + (r.value ?? 0), 0)
-  const anyPrice = rows.some(r => r.price != null)
+  const shownRows = acctFilter === 'ALL' ? rows : rows.filter(r => r.account === acctFilter)
+  const total = shownRows.reduce((s, r) => s + (r.value ?? 0), 0)
+  const anyPrice = shownRows.some(r => r.price != null)
   const accountTotals = ACCOUNTS
     .map(a => ({ ...a, value: rows.filter(r => r.account === a.code).reduce((s, r) => s + (r.value ?? 0), 0) }))
     .filter(a => a.value > 0)
@@ -162,13 +164,28 @@ export default function Dashboard() {
 
         <div className="card">
           <h2>My holdings</h2>
+          {!loading && rows.length > 0 && (
+            <div className="filter-row">
+              {[{ code: 'ALL', label: 'All' }, ...ACCOUNTS].map(a => (
+                <button
+                  key={a.code}
+                  className={`filter-btn${acctFilter === a.code ? ' active' : ''}`}
+                  onClick={() => setAcctFilter(a.code)}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          )}
           {loading ? (
             <div className="empty"><span className="spin" /></div>
           ) : rows.length === 0 ? (
             <div className="empty">No holdings yet — add your first ETF above.</div>
+          ) : shownRows.length === 0 ? (
+            <div className="empty">No holdings in {acctLabel(acctFilter)} yet.</div>
           ) : (
             <>
-              {rows.some(r => r.price == null) && (
+              {shownRows.some(r => r.price == null) && (
                 <div className="notice">
                   Tickers showing “—” were added since the last signal run. Prices
                   fill in on the next run (weekdays after market close), or run
@@ -188,7 +205,7 @@ export default function Dashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map(r => (
+                    {shownRows.map(r => (
                       <tr key={r.id}>
                         <td><span className="ticker">{displayTicker(r.ticker)}</span></td>
                         <td>
@@ -233,7 +250,7 @@ export default function Dashboard() {
               </div>
               {anyPrice && (
                 <>
-                  {accountTotals.length > 1 && accountTotals.map(a => (
+                  {acctFilter === 'ALL' && accountTotals.length > 1 && accountTotals.map(a => (
                     <div key={a.code} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
                       <span className="muted">{a.label}</span>
                       <span className="muted" style={{ fontFamily: 'var(--mono)' }}>{fmtCad.format(a.value)}</span>
@@ -241,7 +258,9 @@ export default function Dashboard() {
                   ))}
                   <div className="total-line">
                     <div>
-                      <div className="field-label" style={{ margin: 0 }}>Portfolio value</div>
+                      <div className="field-label" style={{ margin: 0 }}>
+                        {acctFilter === 'ALL' ? 'Portfolio value' : `${acctLabel(acctFilter)} value`}
+                      </div>
                       {lastUpdatedText && <span className="muted">prices updated {lastUpdatedText}</span>}
                     </div>
                     <span className="amt">{fmtCad.format(total)}</span>
