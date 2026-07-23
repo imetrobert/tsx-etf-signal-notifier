@@ -4,6 +4,12 @@
 // so the app's Refresh button shows live values between signal-job runs.
 // Snapshot-only: never touches signal state, history, or emails.
 //
+// Falls back to The Globe and Mail's fund quote page (by FundSERV code)
+// for Canadian mutual funds Yahoo doesn't carry. That fallback is
+// current-price-only — no historical NAV, so those tickers won't get
+// ma50/ma200/pct_vs_ma200 or generate BUY/SELL trend signals, just a
+// live portfolio value.
+//
 // Deploy: Supabase Dashboard → Edge Functions → Deploy a new function →
 // name it exactly "refresh-prices", paste this file, deploy (keep
 // "Verify JWT" on). Or via CLI: supabase functions deploy refresh-prices
@@ -27,6 +33,35 @@ function sma(values: number[], n: number): number | null {
   let s = 0
   for (let i = values.length - n; i < values.length; i++) s += values[i]
   return s / n
+}
+
+// Fallback for Canadian mutual funds Yahoo doesn't carry: The Globe and
+// Mail indexes funds directly by their FundSERV code (e.g. RBF941.CF).
+// Current price only — no history, so ma50/ma200/pct_vs_ma200 stay null
+// for these (no trend signal without ~200 days of NAV, just a live value).
+async function fetchGlobeAndMailPrice(ticker: string): Promise<number | null> {
+  const code = ticker.replace(/\.(TO|NE)$/i, '')
+  const url = `https://www.theglobeandmail.com/investing/markets/funds/${encodeURIComponent(code)}.CF/`
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36' },
+  })
+  if (!res.ok) return null
+  const html = await res.text()
+  const patterns = [
+    /"navps"\s*:\s*"?([\d.]+)"?/i,
+    /NAVPS[^0-9$]{0,20}\$?\s*([\d.]+)/i,
+    /"lastPrice"\s*:\s*"?([\d.]+)"?/i,
+    /"regularMarketPrice"\s*:\s*"?([\d.]+)"?/i,
+    /class="[^"]*(?:barchart|quote|price)[^"]*"[^>]*>\s*\$?\s*([\d.]+)/i,
+  ]
+  for (const re of patterns) {
+    const m = html.match(re)
+    if (m) {
+      const price = parseFloat(m[1])
+      if (!isNaN(price) && price > 0) return price
+    }
+  }
+  return null
 }
 
 // Resolves an API key across all three env shapes Supabase uses:
@@ -117,8 +152,22 @@ Deno.serve(async (req) => {
       if (error) throw new Error(error.message)
       updated++
       await new Promise(r => setTimeout(r, 200)) // be polite to Yahoo
-    } catch (e) {
-      failed.push(`${ticker}: ${(e as Error).message}`)
+    } catch (yahooErr) {
+      try {
+        const price = await fetchGlobeAndMailPrice(ticker)
+        if (price == null) throw new Error('no price found on Globe and Mail page')
+        const { error } = await db.from('etf_prices').upsert({
+          ticker,
+          price,
+          currency: 'CAD',
+          price_date: new Date().toISOString().slice(0, 10),
+          updated_at: new Date().toISOString(),
+        })
+        if (error) throw new Error(error.message)
+        updated++
+      } catch (gmErr) {
+        failed.push(`${ticker}: Yahoo ${(yahooErr as Error).message}; Globe and Mail ${(gmErr as Error).message}`)
+      }
     }
   }
 
