@@ -16,6 +16,7 @@ export default function Dashboard() {
   const [regime, setRegime] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshNote, setRefreshNote] = useState('')
   const [error, setError] = useState('')
   const [ticker, setTicker] = useState('')
   const [shares, setShares] = useState('')
@@ -45,6 +46,14 @@ export default function Dashboard() {
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
+    setRefreshNote('')
+    try {
+      const { data, error } = await supabase.functions.invoke('refresh-prices')
+      if (error) setRefreshNote('Live price refresh unavailable — showing the last stored prices. (Is the refresh-prices edge function deployed?)')
+      else if (data?.failed?.length) setRefreshNote(`Prices refreshed, but ${data.failed.length} ticker(s) failed: ${data.failed.join('; ')}`)
+    } catch {
+      setRefreshNote('Live price refresh unavailable — showing the last stored prices.')
+    }
     await load()
     setRefreshing(false)
   }, [load])
@@ -104,6 +113,7 @@ export default function Dashboard() {
     <>
       <Navbar subtitle="Notification-only — never places trades" onRefresh={refresh} refreshing={refreshing} />
       <main>
+        {refreshNote && <div className="notice">{refreshNote}</div>}
         {regime && (
           <div className="card">
             <h2 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

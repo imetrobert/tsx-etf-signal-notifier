@@ -11,6 +11,7 @@ export default function Watchlist() {
   const [ticker, setTicker] = useState('')
   const [saving, setSaving] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshNote, setRefreshNote] = useState('')
 
   const load = useCallback(async () => {
     const [w, p] = await Promise.all([
@@ -29,6 +30,14 @@ export default function Watchlist() {
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
+    setRefreshNote('')
+    try {
+      const { data, error } = await supabase.functions.invoke('refresh-prices')
+      if (error) setRefreshNote('Live price refresh unavailable — showing the last stored prices.')
+      else if (data?.failed?.length) setRefreshNote(`Prices refreshed, but ${data.failed.length} ticker(s) failed.`)
+    } catch {
+      setRefreshNote('Live price refresh unavailable — showing the last stored prices.')
+    }
     await load()
     setRefreshing(false)
   }, [load])
@@ -56,6 +65,7 @@ export default function Watchlist() {
     <>
       <Navbar subtitle="ETFs monitored beyond your holdings" onRefresh={refresh} refreshing={refreshing} />
       <main>
+        {refreshNote && <div className="notice">{refreshNote}</div>}
         <div className="card">
           <h2>Add to watchlist</h2>
           <form className="form-row" onSubmit={add}>

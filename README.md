@@ -48,8 +48,12 @@ using the taxable non-registered account; SELL alerts spell out the tax
 consequences per account (TFSA sales are tax-free dry powder, RRSP proceeds
 should stay inside the account, non-registered sales can realize capital
 gains). The advice is stored with each signal and shown in the Signals tab
-and alert emails. A **↻ Refresh** button in the header reloads the latest
-prices/signals on demand (data updates when the signal job runs).
+and alert emails. A **↻ Refresh** button in the header fetches live prices
+on demand via the `refresh-prices` Supabase Edge Function
+(`supabase/functions/refresh-prices/index.ts` — deploy it once in the
+Supabase dashboard under Edge Functions, named exactly `refresh-prices`,
+with Verify JWT on). If the function isn't deployed, Refresh falls back to
+reloading the last stored data and says so.
 
 ## Repo structure
 
