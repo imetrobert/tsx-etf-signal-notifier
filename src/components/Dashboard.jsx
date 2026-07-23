@@ -6,6 +6,7 @@ import Navbar from './Navbar'
 const ACCOUNTS = [
   { code: 'TFSA', label: 'TFSA' },
   { code: 'RRSP', label: 'RRSP' },
+  { code: 'LIRA', label: 'Locked-in RRSP' },
   { code: 'NON_REG', label: 'Non-registered' },
 ]
 const acctLabel = code => ACCOUNTS.find(a => a.code === code)?.label ?? code

@@ -9,7 +9,7 @@ create table if not exists etf_holdings (
   ticker text not null,
   shares numeric not null check (shares > 0),
   account text not null default 'NON_REG'
-    constraint etf_holdings_account_chk check (account in ('RRSP','TFSA','NON_REG')),
+    constraint etf_holdings_account_chk check (account in ('RRSP','TFSA','NON_REG','LIRA')),
   institution text not null default 'WEALTHSIMPLE'
     constraint etf_holdings_institution_chk check (institution in ('WEALTHSIMPLE','MANULIFE')),
   created_at timestamptz not null default now(),
@@ -21,10 +21,9 @@ create table if not exists etf_holdings (
 -- holdings existed: add the columns, move uniqueness to
 -- (ticker, account, institution), and add the signal advice column.
 alter table etf_holdings add column if not exists account text not null default 'NON_REG';
-do $$ begin
-  alter table etf_holdings add constraint etf_holdings_account_chk
-    check (account in ('RRSP','TFSA','NON_REG'));
-exception when duplicate_object then null; end $$;
+alter table etf_holdings drop constraint if exists etf_holdings_account_chk;
+alter table etf_holdings add constraint etf_holdings_account_chk
+  check (account in ('RRSP','TFSA','NON_REG','LIRA'));
 alter table etf_holdings add column if not exists institution text not null default 'WEALTHSIMPLE';
 do $$ begin
   alter table etf_holdings add constraint etf_holdings_institution_chk

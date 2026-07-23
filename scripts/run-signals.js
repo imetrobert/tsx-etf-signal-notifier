@@ -145,7 +145,7 @@ function evaluate(ticker, ind, lastState, series) {
 // The user's TFSA and RRSP are maxed out (no new contribution room), so any
 // buy inside a registered account requires selling something there first.
 
-const ACCOUNT_LABEL = { RRSP: 'RRSP', TFSA: 'TFSA', NON_REG: 'non-registered account' }
+const ACCOUNT_LABEL = { RRSP: 'RRSP', TFSA: 'TFSA', NON_REG: 'non-registered account', LIRA: 'locked-in RRSP' }
 
 function accountAdvice(dir, accounts) {
   const held = [...new Set(accounts)]
@@ -154,10 +154,14 @@ function accountAdvice(dir, accounts) {
     : `You don't currently hold this ETF (watchlist signal).`
 
   if (dir === 'BUY') {
-    return `${heldText} Your TFSA and RRSP are maxed out — no new contribution room. ` +
+    let advice = `${heldText} Your TFSA and RRSP are maxed out — no new contribution room. ` +
       `To act on this buy inside a registered account, sell an existing TFSA/RRSP holding first ` +
       `(swaps inside a registered account have no tax impact), ideally one with a weaker outlook. ` +
       `Buying without selling means using your non-registered account, where dividends and future gains are taxable.`
+    if (held.includes('LIRA')) {
+      advice += ` The locked-in RRSP can never accept new money — a buy there can only be funded by selling another holding inside the LIRA.`
+    }
+    return advice
   }
 
   // SELL / trim: what selling means in each account where it's held.
@@ -169,6 +173,10 @@ function accountAdvice(dir, accounts) {
   if (held.includes('RRSP')) {
     parts.push(`RRSP: selling has no immediate tax hit, but keep the proceeds inside the account — ` +
       `withdrawals are taxed as income and the contribution room is lost for good.`)
+  }
+  if (held.includes('LIRA')) {
+    parts.push(`Locked-in RRSP: selling is tax-deferred with no immediate hit, and the cash is locked ` +
+      `inside the account until retirement anyway — it becomes dry powder for the next BUY signal there.`)
   }
   if (held.includes('NON_REG')) {
     parts.push(`Non-registered: selling can realize capital gains tax — weigh the tax cost against the trim benefit.`)
