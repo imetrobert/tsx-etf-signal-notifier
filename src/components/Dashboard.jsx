@@ -115,7 +115,11 @@ export default function Dashboard() {
 
   const rows = holdings.map(h => {
     const p = prices[h.ticker]
-    return { ...h, price: p?.price ?? null, priceDate: p?.price_date ?? null, value: p?.price != null ? p.price * h.shares : null }
+    // Funds sourced via the Globe and Mail fallback (Yahoo has no coverage)
+    // get a current price but no historical NAV, so ma200 stays null forever
+    // — that's the signal a holding can price but can't generate BUY/SELL alerts.
+    const priceOnly = p?.price != null && p?.ma200 == null
+    return { ...h, price: p?.price ?? null, priceDate: p?.price_date ?? null, value: p?.price != null ? p.price * h.shares : null, priceOnly }
   })
   const shownRows = rows.filter(r =>
     (acctFilter === 'ALL' || r.account === acctFilter) &&
@@ -275,9 +279,17 @@ export default function Dashboard() {
                           ) : r.fund_name ? (
                             <>
                               {r.fund_name}<br /><span className="muted">{displayTicker(r.ticker)}</span>
+                              {r.priceOnly && (
+                                <><br /><span className="tag priceonly" title="This fund's data source has no historical NAV, so it can't generate BUY/SELL signals — price and value are still tracked.">Price only · no signal</span></>
+                              )}
                             </>
                           ) : (
-                            <span className="ticker">{displayTicker(r.ticker)}</span>
+                            <>
+                              <span className="ticker">{displayTicker(r.ticker)}</span>
+                              {r.priceOnly && (
+                                <><br /><span className="tag priceonly" title="This fund's data source has no historical NAV, so it can't generate BUY/SELL signals — price and value are still tracked.">Price only · no signal</span></>
+                              )}
+                            </>
                           )}
                         </td>
                         <td>
