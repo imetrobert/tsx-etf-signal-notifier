@@ -6,11 +6,26 @@
 
 create table if not exists etf_holdings (
   id uuid primary key default gen_random_uuid(),
-  ticker text not null unique,
+  ticker text not null,
   shares numeric not null check (shares > 0),
+  account text not null default 'NON_REG'
+    constraint etf_holdings_account_chk check (account in ('RRSP','TFSA','NON_REG')),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint etf_holdings_ticker_account_key unique (ticker, account)
 );
+
+-- Migration for installs created before per-account holdings existed:
+-- add the account column, relax the ticker-only uniqueness to
+-- (ticker, account), and add the signal advice column.
+alter table etf_holdings add column if not exists account text not null default 'NON_REG';
+do $$ begin
+  alter table etf_holdings add constraint etf_holdings_account_chk
+    check (account in ('RRSP','TFSA','NON_REG'));
+exception when duplicate_object then null; end $$;
+alter table etf_holdings drop constraint if exists etf_holdings_ticker_key;
+create unique index if not exists etf_holdings_ticker_account_key
+  on etf_holdings (ticker, account);
 
 create table if not exists etf_watchlist (
   id uuid primary key default gen_random_uuid(),
@@ -37,9 +52,11 @@ create table if not exists etf_signals (
   signal text not null check (signal in ('BUY','SELL')),
   reasons text not null,
   est_recovery_text text,
+  account_advice text,
   price numeric,
   created_at timestamptz not null default now()
 );
+alter table etf_signals add column if not exists account_advice text;
 
 -- Per-ticker signal state so the same condition never emails twice in a row.
 create table if not exists etf_signal_state (

@@ -3,17 +3,27 @@ import { supabase } from '../lib/supabase'
 import { normalizeTicker, displayTicker, fmtCad } from '../lib/tickers'
 import Navbar from './Navbar'
 
+const ACCOUNTS = [
+  { code: 'TFSA', label: 'TFSA' },
+  { code: 'RRSP', label: 'RRSP' },
+  { code: 'NON_REG', label: 'Non-registered' },
+]
+const acctLabel = code => ACCOUNTS.find(a => a.code === code)?.label ?? code
+
 export default function Dashboard() {
   const [holdings, setHoldings] = useState([])
   const [prices, setPrices] = useState({})
   const [regime, setRegime] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [ticker, setTicker] = useState('')
   const [shares, setShares] = useState('')
+  const [account, setAccount] = useState('TFSA')
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [editShares, setEditShares] = useState('')
+  const [editAccount, setEditAccount] = useState('NON_REG')
 
   const load = useCallback(async () => {
     setError('')
@@ -33,6 +43,12 @@ export default function Dashboard() {
 
   useEffect(() => { load() }, [load])
 
+  const refresh = useCallback(async () => {
+    setRefreshing(true)
+    await load()
+    setRefreshing(false)
+  }, [load])
+
   async function addHolding(e) {
     e.preventDefault()
     const sym = normalizeTicker(ticker)
@@ -42,23 +58,26 @@ export default function Dashboard() {
     setError('')
     const { error } = await supabase
       .from('etf_holdings')
-      .upsert({ ticker: sym, shares: qty }, { onConflict: 'ticker' })
+      .upsert({ ticker: sym, shares: qty, account }, { onConflict: 'ticker,account' })
     if (error) setError(error.message)
     else { setTicker(''); setShares(''); await load() }
     setSaving(false)
   }
 
-  async function saveShares(id) {
+  async function saveEdit(id) {
     const qty = parseFloat(editShares)
     if (!(qty > 0)) return
-    const { error } = await supabase.from('etf_holdings').update({ shares: qty, updated_at: new Date().toISOString() }).eq('id', id)
+    const { error } = await supabase
+      .from('etf_holdings')
+      .update({ shares: qty, account: editAccount, updated_at: new Date().toISOString() })
+      .eq('id', id)
     if (error) setError(error.message)
     setEditingId(null)
     await load()
   }
 
-  async function remove(id, sym) {
-    if (!window.confirm(`Remove ${displayTicker(sym)} from holdings?`)) return
+  async function remove(id, sym, acct) {
+    if (!window.confirm(`Remove ${displayTicker(sym)} (${acctLabel(acct)}) from holdings?`)) return
     const { error } = await supabase.from('etf_holdings').delete().eq('id', id)
     if (error) setError(error.message)
     await load()
@@ -70,6 +89,9 @@ export default function Dashboard() {
   })
   const total = rows.reduce((s, r) => s + (r.value ?? 0), 0)
   const anyPrice = rows.some(r => r.price != null)
+  const accountTotals = ACCOUNTS
+    .map(a => ({ ...a, value: rows.filter(r => r.account === a.code).reduce((s, r) => s + (r.value ?? 0), 0) }))
+    .filter(a => a.value > 0)
   const lastUpdated = Object.values(prices).map(p => p.updated_at).sort().pop()
   const lastUpdatedText = lastUpdated
     ? new Date(lastUpdated).toLocaleString('en-CA', {
@@ -80,7 +102,7 @@ export default function Dashboard() {
 
   return (
     <>
-      <Navbar subtitle="Notification-only — never places trades" />
+      <Navbar subtitle="Notification-only — never places trades" onRefresh={refresh} refreshing={refreshing} />
       <main>
         {regime && (
           <div className="card">
@@ -112,10 +134,18 @@ export default function Dashboard() {
               <label className="field-label">Shares / units</label>
               <input value={shares} onChange={e => setShares(e.target.value)} placeholder="e.g. 25" inputMode="decimal" />
             </div>
+            <div>
+              <label className="field-label">Account</label>
+              <select value={account} onChange={e => setAccount(e.target.value)}>
+                {ACCOUNTS.map(a => <option key={a.code} value={a.code}>{a.label}</option>)}
+              </select>
+            </div>
             <button className="btn" type="submit" disabled={saving}>{saving ? 'Adding…' : 'Add'}</button>
           </form>
           <div className="muted" style={{ marginTop: 8 }}>
-            Plain tickers get the TSX suffix automatically (XEQT → XEQT.TO). Re-adding a ticker updates its share count.
+            Plain tickers get the TSX suffix automatically (XEQT → XEQT.TO). Re-adding a
+            ticker in the same account updates its share count. Signal advice assumes your
+            TFSA and RRSP are maxed out (sell-to-buy in registered accounts).
           </div>
           {error && <div className="err">{error}</div>}
         </div>
@@ -140,6 +170,7 @@ export default function Dashboard() {
                   <thead>
                     <tr>
                       <th>ETF</th>
+                      <th>Account</th>
                       <th className="num">Shares</th>
                       <th className="num">Price</th>
                       <th className="num">Value</th>
@@ -150,6 +181,19 @@ export default function Dashboard() {
                     {rows.map(r => (
                       <tr key={r.id}>
                         <td><span className="ticker">{displayTicker(r.ticker)}</span></td>
+                        <td>
+                          {editingId === r.id ? (
+                            <select
+                              style={{ fontSize: 13, padding: '4px 6px', width: 'auto' }}
+                              value={editAccount}
+                              onChange={e => setEditAccount(e.target.value)}
+                            >
+                              {ACCOUNTS.map(a => <option key={a.code} value={a.code}>{a.label}</option>)}
+                            </select>
+                          ) : (
+                            <span className="tag acct">{acctLabel(r.account)}</span>
+                          )}
+                        </td>
                         <td className="num">
                           {editingId === r.id ? (
                             <input
@@ -165,12 +209,12 @@ export default function Dashboard() {
                         <td className="num">{r.value != null ? fmtCad.format(r.value) : '—'}</td>
                         <td className="num" style={{ whiteSpace: 'nowrap' }}>
                           {editingId === r.id ? (
-                            <button className="btn small" onClick={() => saveShares(r.id)}>Save</button>
+                            <button className="btn small" onClick={() => saveEdit(r.id)}>Save</button>
                           ) : (
-                            <button className="btn small secondary" onClick={() => { setEditingId(r.id); setEditShares(String(r.shares)) }}>Edit</button>
+                            <button className="btn small secondary" onClick={() => { setEditingId(r.id); setEditShares(String(r.shares)); setEditAccount(r.account || 'NON_REG') }}>Edit</button>
                           )}
                           {' '}
-                          <button className="btn small warn" onClick={() => remove(r.id, r.ticker)}>✕</button>
+                          <button className="btn small warn" onClick={() => remove(r.id, r.ticker, r.account)}>✕</button>
                         </td>
                       </tr>
                     ))}
@@ -178,13 +222,21 @@ export default function Dashboard() {
                 </table>
               </div>
               {anyPrice && (
-                <div className="total-line">
-                  <div>
-                    <div className="field-label" style={{ margin: 0 }}>Portfolio value</div>
-                    {lastUpdatedText && <span className="muted">prices updated {lastUpdatedText}</span>}
+                <>
+                  {accountTotals.length > 1 && accountTotals.map(a => (
+                    <div key={a.code} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
+                      <span className="muted">{a.label}</span>
+                      <span className="muted" style={{ fontFamily: 'var(--mono)' }}>{fmtCad.format(a.value)}</span>
+                    </div>
+                  ))}
+                  <div className="total-line">
+                    <div>
+                      <div className="field-label" style={{ margin: 0 }}>Portfolio value</div>
+                      {lastUpdatedText && <span className="muted">prices updated {lastUpdatedText}</span>}
+                    </div>
+                    <span className="amt">{fmtCad.format(total)}</span>
                   </div>
-                  <span className="amt">{fmtCad.format(total)}</span>
-                </div>
+                </>
               )}
             </>
           )}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { displayTicker, fmtCad } from '../lib/tickers'
 import Navbar from './Navbar'
@@ -6,24 +6,32 @@ import Navbar from './Navbar'
 export default function SignalHistory() {
   const [signals, setSignals] = useState([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    supabase
+  const load = useCallback(async () => {
+    setError('')
+    const { data, error } = await supabase
       .from('etf_signals')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(100)
-      .then(({ data, error }) => {
-        if (error) setError(error.message)
-        else setSignals(data || [])
-        setLoading(false)
-      })
+    if (error) setError(error.message)
+    else setSignals(data || [])
+    setLoading(false)
   }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true)
+    await load()
+    setRefreshing(false)
+  }, [load])
 
   return (
     <>
-      <Navbar subtitle="Every alert the daily check has fired" />
+      <Navbar subtitle="Every alert the daily check has fired" onRefresh={refresh} refreshing={refreshing} />
       <main>
         <div className="card">
           <h2>Signal history</h2>
@@ -50,6 +58,7 @@ export default function SignalHistory() {
                   {s.price != null && <>Price at signal: {fmtCad.format(s.price)}. </>}
                   {s.est_recovery_text && <>{s.est_recovery_text}</>}
                 </div>
+                {s.account_advice && <div className="signal-meta" style={{ color: 'var(--ledger)' }}>{s.account_advice}</div>}
               </div>
             ))
           )}

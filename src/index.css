@@ -43,6 +43,17 @@ header.site {
   padding: 6px 12px; border-radius: 7px; cursor: pointer; opacity: .85;
 }
 .signout:hover { opacity: 1; }
+.header-actions { display: flex; gap: 8px; align-items: center; }
+.refresh {
+  background: none; border: 1px solid rgba(247,245,240,.35); color: var(--paper);
+  font-family: var(--sans); font-size: 12px; font-weight: 600;
+  padding: 6px 12px; border-radius: 7px; cursor: pointer; opacity: .85;
+  white-space: nowrap;
+}
+.refresh:hover { opacity: 1; }
+.refresh:disabled { opacity: .5; cursor: default; }
+.refresh-icon { display: inline-block; }
+.refresh-icon.spinning { animation: sp .7s linear infinite; }
 
 /* ── Nav tabs ── */
 nav.tabs {
@@ -114,6 +125,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
 .tag.sell { background: var(--accent-soft); color: var(--accent); }
 .tag.hold { background: #eee; color: #888; }
 .tag.watch { background: var(--warn-soft); color: var(--warn); }
+.tag.acct { background: #e8e6df; color: #5d5949; font-size: 10px; }
 
 .muted { color: var(--muted); font-size: 12.5px; }
 .err { color: var(--accent); font-size: 13px; margin-top: 8px; }

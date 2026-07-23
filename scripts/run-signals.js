@@ -141,6 +141,46 @@ function evaluate(ticker, ind, lastState, series) {
   return { stateKey, signal: { dir, reasons, est } }
 }
 
+// ---------- account-aware advice ----------
+// The user's TFSA and RRSP are maxed out (no new contribution room), so any
+// buy inside a registered account requires selling something there first.
+
+const ACCOUNT_LABEL = { RRSP: 'RRSP', TFSA: 'TFSA', NON_REG: 'non-registered account' }
+
+function accountAdvice(dir, accounts) {
+  const held = [...new Set(accounts)]
+  const heldText = held.length
+    ? `You hold this ETF in your ${held.map(a => ACCOUNT_LABEL[a] || a).join(' and ')}.`
+    : `You don't currently hold this ETF (watchlist signal).`
+
+  if (dir === 'BUY') {
+    return `${heldText} Your TFSA and RRSP are maxed out — no new contribution room. ` +
+      `To act on this buy inside a registered account, sell an existing TFSA/RRSP holding first ` +
+      `(swaps inside a registered account have no tax impact), ideally one with a weaker outlook. ` +
+      `Buying without selling means using your non-registered account, where dividends and future gains are taxable.`
+  }
+
+  // SELL / trim: what selling means in each account where it's held.
+  const parts = [heldText]
+  if (held.includes('TFSA')) {
+    parts.push(`TFSA: selling is tax-free — keep the cash inside the TFSA to redeploy on the next BUY signal ` +
+      `(withdrawing it only restores contribution room next calendar year, and you can't re-contribute since you're maxed).`)
+  }
+  if (held.includes('RRSP')) {
+    parts.push(`RRSP: selling has no immediate tax hit, but keep the proceeds inside the account — ` +
+      `withdrawals are taxed as income and the contribution room is lost for good.`)
+  }
+  if (held.includes('NON_REG')) {
+    parts.push(`Non-registered: selling can realize capital gains tax — weigh the tax cost against the trim benefit.`)
+  }
+  if (!held.length) {
+    parts.push(`No position to trim — no action needed.`)
+  } else {
+    parts.push(`Since your registered accounts are maxed, cash raised inside the TFSA/RRSP is your only way to fund future registered buys — a trim here creates that dry powder.`)
+  }
+  return parts.join(' ')
+}
+
 // ---------- market regime (macro layer) ----------
 // Three free official gauges; each failure degrades gracefully to "unavailable".
 
@@ -266,6 +306,7 @@ async function sendEmail(signals, regime, regimeChange) {
       (${s.price.toFixed(2)} CAD)<br/>
       ${s.reasons}<br/>
       <em>${s.est}</em><br/>
+      ${s.advice ? `<span style="color:#2b4a4d">${s.advice}</span><br/>` : ''}
       <span style="color:#555">${regimeNote(s.dir, regime.level)}</span>
     </div>`
   ).join('') + regimeHtml(regime)
@@ -290,13 +331,15 @@ async function sendEmail(signals, regime, regimeChange) {
 
 async function main() {
   const [holdings, watchlist, states] = await Promise.all([
-    db.from('etf_holdings').select('ticker'),
+    db.from('etf_holdings').select('ticker, account'),
     db.from('etf_watchlist').select('ticker'),
     db.from('etf_signal_state').select('*'),
   ])
   for (const r of [holdings, watchlist, states]) if (r.error) throw new Error(r.error.message)
 
   const tickers = [...new Set([...holdings.data, ...watchlist.data].map(r => r.ticker))]
+  const accountsByTicker = {}
+  for (const r of holdings.data) (accountsByTicker[r.ticker] ??= []).push(r.account || 'NON_REG')
   const lastStates = Object.fromEntries(states.data.map(r => [r.ticker, r.last_state]))
   console.log(`Evaluating ${tickers.length} tickers: ${tickers.join(', ')}`)
 
@@ -346,12 +389,13 @@ async function main() {
       console.log(`  ${ticker}: ${ind.price.toFixed(2)} ${currency}, MA50 ${ind.ma50.toFixed(2)}, MA200 ${ind.ma200.toFixed(2)} (${ind.pctVsMa200 >= 0 ? '+' : ''}${ind.pctVsMa200.toFixed(1)}%), state ${stateKey}${signal ? ` → ${signal.dir}` : ''}`)
 
       if (signal) {
+        const advice = accountAdvice(signal.dir, accountsByTicker[ticker] || [])
         const { error } = await db.from('etf_signals').insert({
           ticker, signal: signal.dir, reasons: signal.reasons,
-          est_recovery_text: signal.est, price: ind.price,
+          est_recovery_text: signal.est, account_advice: advice, price: ind.price,
         })
         if (error) throw new Error(error.message)
-        fired.push({ ticker, dir: signal.dir, reasons: signal.reasons, est: signal.est, price: ind.price })
+        fired.push({ ticker, dir: signal.dir, reasons: signal.reasons, est: signal.est, advice, price: ind.price })
       }
       await new Promise(r => setTimeout(r, 400)) // be polite to Yahoo
     } catch (e) {

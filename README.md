@@ -40,6 +40,17 @@ baseline. BUY alerts include a hold-time estimate from that ETF's own
 stretches took to revert to the 200-day average. All signals are also
 logged to the app's **Signals** tab, email or not.
 
+**Account-aware advice**: each holding is tagged TFSA, RRSP, or
+non-registered. Advice assumes the **TFSA and RRSP are maxed out** (no new
+contribution room), so every BUY alert reminds you a registered-account buy
+requires selling an existing TFSA/RRSP holding first (tax-free swap) or
+using the taxable non-registered account; SELL alerts spell out the tax
+consequences per account (TFSA sales are tax-free dry powder, RRSP proceeds
+should stay inside the account, non-registered sales can realize capital
+gains). The advice is stored with each signal and shown in the Signals tab
+and alert emails. A **↻ Refresh** button in the header reloads the latest
+prices/signals on demand (data updates when the signal job runs).
+
 ## Repo structure
 
 ```
@@ -69,7 +80,7 @@ logged to the app's **Signals** tab, email or not.
 
 | Table | Purpose |
 |---|---|
-| `etf_holdings` | ticker + shares you own |
+| `etf_holdings` | ticker + shares you own, per account (TFSA / RRSP / non-registered) |
 | `etf_watchlist` | extra tickers to monitor |
 | `etf_prices` | latest snapshot per ticker (price, MA50, MA200, % vs MA200) |
 | `etf_signals` | every fired alert (what the emails contain) |

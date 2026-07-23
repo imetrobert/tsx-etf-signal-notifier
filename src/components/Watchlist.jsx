@@ -10,6 +10,7 @@ export default function Watchlist() {
   const [error, setError] = useState('')
   const [ticker, setTicker] = useState('')
   const [saving, setSaving] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
   const load = useCallback(async () => {
     const [w, p] = await Promise.all([
@@ -25,6 +26,12 @@ export default function Watchlist() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true)
+    await load()
+    setRefreshing(false)
+  }, [load])
 
   async function add(e) {
     e.preventDefault()
@@ -47,7 +54,7 @@ export default function Watchlist() {
 
   return (
     <>
-      <Navbar subtitle="ETFs monitored beyond your holdings" />
+      <Navbar subtitle="ETFs monitored beyond your holdings" onRefresh={refresh} refreshing={refreshing} />
       <main>
         <div className="card">
           <h2>Add to watchlist</h2>
