@@ -10,6 +10,17 @@ const ACCOUNTS = [
 ]
 const acctLabel = code => ACCOUNTS.find(a => a.code === code)?.label ?? code
 
+const INSTITUTIONS = [
+  { code: 'WEALTHSIMPLE', label: 'Wealthsimple', short: 'WS' },
+  { code: 'MANULIFE', label: 'Manulife Wealth', short: 'Manulife' },
+]
+const instLabel = code => INSTITUTIONS.find(i => i.code === code)?.label ?? code
+const instShort = code => INSTITUTIONS.find(i => i.code === code)?.short ?? code
+
+// Yahoo lists mutual funds under Morningstar-style 0P... symbols; their NAV
+// updates once daily, unlike intraday ETF quotes.
+const isFund = ticker => ticker.startsWith('0P')
+
 export default function Dashboard() {
   const [holdings, setHoldings] = useState([])
   const [prices, setPrices] = useState({})
@@ -21,11 +32,14 @@ export default function Dashboard() {
   const [ticker, setTicker] = useState('')
   const [shares, setShares] = useState('')
   const [account, setAccount] = useState('TFSA')
+  const [institution, setInstitution] = useState('WEALTHSIMPLE')
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [editShares, setEditShares] = useState('')
   const [editAccount, setEditAccount] = useState('NON_REG')
+  const [editInstitution, setEditInstitution] = useState('WEALTHSIMPLE')
   const [acctFilter, setAcctFilter] = useState('ALL')
+  const [instFilter, setInstFilter] = useState('ALL')
 
   const load = useCallback(async () => {
     setError('')
@@ -68,7 +82,7 @@ export default function Dashboard() {
     setError('')
     const { error } = await supabase
       .from('etf_holdings')
-      .upsert({ ticker: sym, shares: qty, account }, { onConflict: 'ticker,account' })
+      .upsert({ ticker: sym, shares: qty, account, institution }, { onConflict: 'ticker,account,institution' })
     if (error) setError(error.message)
     else { setTicker(''); setShares(''); await load() }
     setSaving(false)
@@ -79,7 +93,7 @@ export default function Dashboard() {
     if (!(qty > 0)) return
     const { error } = await supabase
       .from('etf_holdings')
-      .update({ shares: qty, account: editAccount, updated_at: new Date().toISOString() })
+      .update({ shares: qty, account: editAccount, institution: editInstitution, updated_at: new Date().toISOString() })
       .eq('id', id)
     if (error) setError(error.message)
     setEditingId(null)
@@ -97,19 +111,30 @@ export default function Dashboard() {
     const p = prices[h.ticker]
     return { ...h, price: p?.price ?? null, priceDate: p?.price_date ?? null, value: p?.price != null ? p.price * h.shares : null }
   })
-  const shownRows = acctFilter === 'ALL' ? rows : rows.filter(r => r.account === acctFilter)
+  const shownRows = rows.filter(r =>
+    (acctFilter === 'ALL' || r.account === acctFilter) &&
+    (instFilter === 'ALL' || r.institution === instFilter)
+  )
   const total = shownRows.reduce((s, r) => s + (r.value ?? 0), 0)
   const anyPrice = shownRows.some(r => r.price != null)
   const accountTotals = ACCOUNTS
     .map(a => ({ ...a, value: rows.filter(r => r.account === a.code).reduce((s, r) => s + (r.value ?? 0), 0) }))
     .filter(a => a.value > 0)
-  const lastUpdated = Object.values(prices).map(p => p.updated_at).sort().pop()
-  const lastUpdatedText = lastUpdated
-    ? new Date(lastUpdated).toLocaleString('en-CA', {
-        timeZone: 'America/Toronto',
-        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-      })
-    : null
+  const totalLabelParts = []
+  if (instFilter !== 'ALL') totalLabelParts.push(instLabel(instFilter))
+  if (acctFilter !== 'ALL') totalLabelParts.push(acctLabel(acctFilter))
+  const totalLabel = totalLabelParts.length ? `${totalLabelParts.join(' · ')} value` : 'Portfolio value'
+
+  // ETF quotes refresh intraday; fund NAVs are set once daily — show each
+  // group's own freshness so a lagging NAV date isn't mistaken for staleness.
+  const fmtTime = iso => new Date(iso).toLocaleString('en-CA', {
+    timeZone: 'America/Toronto',
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  })
+  const fmtNavDate = d => new Date(`${d}T12:00:00`).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })
+  const priceEntries = Object.entries(prices)
+  const lastEtfUpdated = priceEntries.filter(([t]) => !isFund(t)).map(([, p]) => p.updated_at).sort().pop()
+  const lastFundNavDate = priceEntries.filter(([t]) => isFund(t)).map(([, p]) => p.price_date).filter(Boolean).sort().pop()
 
   return (
     <>
@@ -152,6 +177,12 @@ export default function Dashboard() {
                 {ACCOUNTS.map(a => <option key={a.code} value={a.code}>{a.label}</option>)}
               </select>
             </div>
+            <div>
+              <label className="field-label">Institution</label>
+              <select value={institution} onChange={e => setInstitution(e.target.value)}>
+                {INSTITUTIONS.map(i => <option key={i.code} value={i.code}>{i.label}</option>)}
+              </select>
+            </div>
             <button className="btn" type="submit" disabled={saving}>{saving ? 'Adding…' : 'Add'}</button>
           </form>
           <div className="muted" style={{ marginTop: 8 }}>
@@ -165,24 +196,37 @@ export default function Dashboard() {
         <div className="card">
           <h2>My holdings</h2>
           {!loading && rows.length > 0 && (
-            <div className="filter-row">
-              {[{ code: 'ALL', label: 'All' }, ...ACCOUNTS].map(a => (
-                <button
-                  key={a.code}
-                  className={`filter-btn${acctFilter === a.code ? ' active' : ''}`}
-                  onClick={() => setAcctFilter(a.code)}
-                >
-                  {a.label}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="filter-row">
+                {[{ code: 'ALL', label: 'All' }, ...ACCOUNTS].map(a => (
+                  <button
+                    key={a.code}
+                    className={`filter-btn${acctFilter === a.code ? ' active' : ''}`}
+                    onClick={() => setAcctFilter(a.code)}
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+              <div className="filter-row">
+                {[{ code: 'ALL', label: 'All institutions' }, ...INSTITUTIONS].map(i => (
+                  <button
+                    key={i.code}
+                    className={`filter-btn${instFilter === i.code ? ' active' : ''}`}
+                    onClick={() => setInstFilter(i.code)}
+                  >
+                    {i.label}
+                  </button>
+                ))}
+              </div>
+            </>
           )}
           {loading ? (
             <div className="empty"><span className="spin" /></div>
           ) : rows.length === 0 ? (
             <div className="empty">No holdings yet — add your first ETF above.</div>
           ) : shownRows.length === 0 ? (
-            <div className="empty">No holdings in {acctLabel(acctFilter)} yet.</div>
+            <div className="empty">No holdings match this filter yet.</div>
           ) : (
             <>
               {shownRows.some(r => r.price == null) && (
@@ -196,8 +240,9 @@ export default function Dashboard() {
                 <table>
                   <thead>
                     <tr>
-                      <th>ETF</th>
+                      <th>ETF / Fund</th>
                       <th>Account</th>
+                      <th>Institution</th>
                       <th className="num">Shares</th>
                       <th className="num">Price</th>
                       <th className="num">Value</th>
@@ -221,6 +266,19 @@ export default function Dashboard() {
                             <span className="tag acct">{acctLabel(r.account)}</span>
                           )}
                         </td>
+                        <td>
+                          {editingId === r.id ? (
+                            <select
+                              style={{ fontSize: 13, padding: '4px 6px', width: 'auto' }}
+                              value={editInstitution}
+                              onChange={e => setEditInstitution(e.target.value)}
+                            >
+                              {INSTITUTIONS.map(i => <option key={i.code} value={i.code}>{i.label}</option>)}
+                            </select>
+                          ) : (
+                            <span className="tag acct">{instShort(r.institution)}</span>
+                          )}
+                        </td>
                         <td className="num">
                           {editingId === r.id ? (
                             <input
@@ -238,7 +296,7 @@ export default function Dashboard() {
                           {editingId === r.id ? (
                             <button className="btn small" onClick={() => saveEdit(r.id)}>Save</button>
                           ) : (
-                            <button className="btn small secondary" onClick={() => { setEditingId(r.id); setEditShares(String(r.shares)); setEditAccount(r.account || 'NON_REG') }}>Edit</button>
+                            <button className="btn small secondary" onClick={() => { setEditingId(r.id); setEditShares(String(r.shares)); setEditAccount(r.account || 'NON_REG'); setEditInstitution(r.institution || 'WEALTHSIMPLE') }}>Edit</button>
                           )}
                           {' '}
                           <button className="btn small warn" onClick={() => remove(r.id, r.ticker, r.account)}>✕</button>
@@ -250,7 +308,7 @@ export default function Dashboard() {
               </div>
               {anyPrice && (
                 <>
-                  {acctFilter === 'ALL' && accountTotals.length > 1 && accountTotals.map(a => (
+                  {acctFilter === 'ALL' && instFilter === 'ALL' && accountTotals.length > 1 && accountTotals.map(a => (
                     <div key={a.code} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
                       <span className="muted">{a.label}</span>
                       <span className="muted" style={{ fontFamily: 'var(--mono)' }}>{fmtCad.format(a.value)}</span>
@@ -258,10 +316,9 @@ export default function Dashboard() {
                   ))}
                   <div className="total-line">
                     <div>
-                      <div className="field-label" style={{ margin: 0 }}>
-                        {acctFilter === 'ALL' ? 'Portfolio value' : `${acctLabel(acctFilter)} value`}
-                      </div>
-                      {lastUpdatedText && <span className="muted">prices updated {lastUpdatedText}</span>}
+                      <div className="field-label" style={{ margin: 0 }}>{totalLabel}</div>
+                      {lastEtfUpdated && <span className="muted">ETF prices updated {fmtTime(lastEtfUpdated)}</span>}
+                      {lastFundNavDate && <div className="muted">fund NAVs as of {fmtNavDate(lastFundNavDate)} close</div>}
                     </div>
                     <span className="amt">{fmtCad.format(total)}</span>
                   </div>

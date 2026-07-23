@@ -10,22 +10,31 @@ create table if not exists etf_holdings (
   shares numeric not null check (shares > 0),
   account text not null default 'NON_REG'
     constraint etf_holdings_account_chk check (account in ('RRSP','TFSA','NON_REG')),
+  institution text not null default 'WEALTHSIMPLE'
+    constraint etf_holdings_institution_chk check (institution in ('WEALTHSIMPLE','MANULIFE')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint etf_holdings_ticker_account_key unique (ticker, account)
+  constraint etf_holdings_ticker_acct_inst_key unique (ticker, account, institution)
 );
 
--- Migration for installs created before per-account holdings existed:
--- add the account column, relax the ticker-only uniqueness to
--- (ticker, account), and add the signal advice column.
+-- Migration for installs created before per-account / per-institution
+-- holdings existed: add the columns, move uniqueness to
+-- (ticker, account, institution), and add the signal advice column.
 alter table etf_holdings add column if not exists account text not null default 'NON_REG';
 do $$ begin
   alter table etf_holdings add constraint etf_holdings_account_chk
     check (account in ('RRSP','TFSA','NON_REG'));
 exception when duplicate_object then null; end $$;
+alter table etf_holdings add column if not exists institution text not null default 'WEALTHSIMPLE';
+do $$ begin
+  alter table etf_holdings add constraint etf_holdings_institution_chk
+    check (institution in ('WEALTHSIMPLE','MANULIFE'));
+exception when duplicate_object then null; end $$;
 alter table etf_holdings drop constraint if exists etf_holdings_ticker_key;
-create unique index if not exists etf_holdings_ticker_account_key
-  on etf_holdings (ticker, account);
+alter table etf_holdings drop constraint if exists etf_holdings_ticker_account_key;
+drop index if exists etf_holdings_ticker_account_key;
+create unique index if not exists etf_holdings_ticker_acct_inst_key
+  on etf_holdings (ticker, account, institution);
 
 create table if not exists etf_watchlist (
   id uuid primary key default gen_random_uuid(),
