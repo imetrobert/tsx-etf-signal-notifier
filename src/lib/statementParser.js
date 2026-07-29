@@ -261,6 +261,24 @@ async function loadPdfjs() {
   return pdfjs
 }
 
+// pdf.js's own getTextContent() consumes its text stream with `for await`,
+// which needs async iteration over a ReadableStream — Safari doesn't implement
+// that, and fails with "undefined is not a function". Reading the stream with a
+// reader is equivalent and works everywhere.
+export async function textItems(page) {
+  if (typeof page.streamTextContent !== 'function') {
+    return (await page.getTextContent()).items
+  }
+  const reader = page.streamTextContent().getReader()
+  const items = []
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    if (value?.items) items.push(...value.items)
+  }
+  return items
+}
+
 // data: ArrayBuffer of the statement. `pdfjs` can be injected for tests.
 export async function parseStatementPdf(data, { pdfjs } = {}) {
   const lib = pdfjs || (await loadPdfjs())
@@ -270,8 +288,7 @@ export async function parseStatementPdf(data, { pdfjs } = {}) {
     const doc = await task.promise
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i)
-      const content = await page.getTextContent()
-      pages.push({ lines: linesFrom(content.items) })
+      pages.push({ lines: linesFrom(await textItems(page)) })
       page.cleanup()
     }
   } finally {
