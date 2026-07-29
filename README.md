@@ -57,6 +57,16 @@ Manulife holding (their tickers are cryptic Morningstar/FundSERV codes) —
 it's used in the email draft and shown in the holdings table instead of
 the raw ticker.
 
+**Every alert names the asset**: cryptic codes like `0P0000768R.TO` are
+impossible to recognize in a notification, so alert emails, the Signals
+tab, and the signal reasoning all lead with a readable name — the fund
+name you set on the holding if there is one, otherwise the name Yahoo
+reports for the security — with the symbol shown underneath. Single- and
+two-signal emails also carry the name in the subject line so the alert is
+identifiable from a phone's lock screen. The name is stored on each signal
+(`etf_signals.asset_name`), so re-run `supabase/schema.sql` after
+deploying this change.
+
 A **↻ Refresh** button in the header fetches live prices
 on demand via the `refresh-prices` Supabase Edge Function
 (`supabase/functions/refresh-prices/index.ts` — deploy it once in the

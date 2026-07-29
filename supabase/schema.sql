@@ -59,6 +59,7 @@ create table if not exists etf_prices (
 create table if not exists etf_signals (
   id uuid primary key default gen_random_uuid(),
   ticker text not null,
+  asset_name text,
   signal text not null check (signal in ('BUY','SELL')),
   reasons text not null,
   est_recovery_text text,
@@ -67,6 +68,9 @@ create table if not exists etf_signals (
   created_at timestamptz not null default now()
 );
 alter table etf_signals add column if not exists account_advice text;
+-- Human-readable name captured when the signal fired: the holding's nickname
+-- (etf_holdings.fund_name) if set, else the fund name Yahoo reports.
+alter table etf_signals add column if not exists asset_name text;
 
 -- Per-ticker signal state so the same condition never emails twice in a row.
 create table if not exists etf_signal_state (
