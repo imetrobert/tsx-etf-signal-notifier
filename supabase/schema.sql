@@ -109,7 +109,7 @@ create policy "etf_signal_state_read" on etf_signal_state
   for select to authenticated using (true);
 
 -- Maps a fund name as printed on a Manulife statement to the ticker this app
--- tracks it under, so importing next quarter's statement recognizes it without
+-- tracks it under, so importing next month's statement recognizes it without
 -- asking again. norm_name is the name uppercased with punctuation stripped.
 create table if not exists etf_fund_map (
   norm_name text primary key,

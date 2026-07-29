@@ -169,7 +169,7 @@ export default function ImportStatement() {
           problems.push(`${row.statementName}: ${err.message}`)
           continue
         }
-        // Remembering the name → ticker link only saves typing next quarter, so
+        // Remembering the name → ticker link only saves typing next month, so
         // a missing etf_fund_map table must not fail an otherwise good import.
         if (ticker && row.action !== 'remove') {
           const { error } = await supabase.from('etf_fund_map').upsert({
@@ -206,7 +206,7 @@ export default function ImportStatement() {
         <div className="card">
           <h2>Import statement</h2>
           <p className="muted">
-            Attach the quarterly PDF from Manulife Wealth. It's read on this
+            Attach the monthly PDF from Manulife Wealth. It's read on this
             device — the file is never uploaded anywhere — and every change is
             listed for you to approve before anything is saved.
           </p>
@@ -245,7 +245,7 @@ export default function ImportStatement() {
             {!result.remembered && (
               <div className="notice">
                 Your holdings were updated, but the tickers you entered couldn't
-                be remembered for next quarter — re-run supabase/schema.sql to
+                be remembered for next month — re-run supabase/schema.sql to
                 add the etf_fund_map and etf_statement_imports tables.
               </div>
             )}
@@ -402,7 +402,7 @@ export default function ImportStatement() {
             <div className="muted" style={{ marginTop: 6 }}>
               Nothing has been saved yet. Units are set to the statement's
               values, funds missing from the statement are removed, and each
-              ticker you enter is remembered for next quarter.
+              ticker you enter is remembered for next month.
             </div>
           </div>
         )}

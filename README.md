@@ -67,8 +67,8 @@ identifiable from a phone's lock screen. The name is stored on each signal
 (`etf_signals.asset_name`), so re-run `supabase/schema.sql` after
 deploying this change.
 
-**Quarterly statement import**: the **Import** tab takes the PDF statement
-Manulife Wealth sends each quarter and syncs the holdings table to it. The
+**Monthly statement import**: the **Import** tab takes the PDF statement
+Manulife Wealth sends each month and syncs the holdings table to it. The
 PDF is parsed on the device with pdf.js — it is never uploaded anywhere —
 and nothing is written until the listed changes are approved. It reads the
 statement date, the account (`RRSP N359858R` → your RRSP), and every
@@ -84,7 +84,7 @@ a fund asks for one — with a Yahoo lookup link and the **nickname
 pre-filled** from the statement ("MANULIFE GLOBAL BALANCED FUND -FE" →
 "Manulife Global Balanced Fund -FE"), editable before saving. Each ticker
 you enter is remembered in `etf_fund_map`, so the same fund is recognized
-automatically next quarter. Applied imports are logged to
+automatically next month. Applied imports are logged to
 `etf_statement_imports`, which is what lets the tab warn you that a
 statement has already been imported. Units are always *set* to the
 statement's values rather than added to them, so re-importing the same PDF
@@ -129,7 +129,7 @@ reloading the last stored data and says so.
         ├── Dashboard.jsx            # holdings CRUD + values + portfolio total
         ├── Watchlist.jsx            # watchlist CRUD + price / vs-200-day
         ├── SignalHistory.jsx        # every fired signal
-        └── ImportStatement.jsx      # quarterly statement PDF → approve → sync holdings
+        └── ImportStatement.jsx      # monthly statement PDF → approve → sync holdings
 ```
 
 ## Supabase tables (shared project, `etf_` prefix)
