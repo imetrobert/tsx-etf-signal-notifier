@@ -147,6 +147,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
   padding: 8px 10px; margin-bottom: 12px; font-size: 12.5px; color: #6b4d15;
 }
 .empty { text-align: center; color: var(--muted); font-size: 13px; padding: 28px 10px; }
+.stat-value { font-size: 14px; font-weight: 600; color: var(--ledger); }
 
 /* ── Login ── */
 .login-wrap { min-height: 90vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
