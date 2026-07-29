@@ -108,6 +108,39 @@ drop policy if exists "etf_signal_state_read" on etf_signal_state;
 create policy "etf_signal_state_read" on etf_signal_state
   for select to authenticated using (true);
 
+-- Maps a fund name as printed on a Manulife statement to the ticker this app
+-- tracks it under, so importing next month's statement recognizes it without
+-- asking again. norm_name is the name uppercased with punctuation stripped.
+create table if not exists etf_fund_map (
+  norm_name text primary key,
+  statement_name text not null,
+  ticker text not null,
+  fund_name text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table etf_fund_map enable row level security;
+drop policy if exists "etf_fund_map_auth" on etf_fund_map;
+create policy "etf_fund_map_auth" on etf_fund_map
+  for all to authenticated using (true) with check (true);
+
+-- Audit trail of applied statement imports, so a statement that has already
+-- been applied can be flagged instead of silently double-counted.
+create table if not exists etf_statement_imports (
+  id uuid primary key default gen_random_uuid(),
+  statement_date date,
+  account_number text,
+  account_type text,
+  institution text not null default 'MANULIFE',
+  file_name text,
+  summary jsonb,
+  created_at timestamptz not null default now()
+);
+alter table etf_statement_imports enable row level security;
+drop policy if exists "etf_statement_imports_auth" on etf_statement_imports;
+create policy "etf_statement_imports_auth" on etf_statement_imports
+  for all to authenticated using (true) with check (true);
+
 -- Macro market-regime snapshot (yield curve, credit spreads, Sahm rule),
 -- refreshed by the signal job. Single row.
 create table if not exists etf_market_regime (

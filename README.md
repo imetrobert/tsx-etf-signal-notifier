@@ -67,6 +67,35 @@ identifiable from a phone's lock screen. The name is stored on each signal
 (`etf_signals.asset_name`), so re-run `supabase/schema.sql` after
 deploying this change.
 
+**Monthly statement import**: the **Import** tab takes the PDF statement
+Manulife Wealth sends each month and syncs the holdings table to it. The
+PDF is parsed on the device with pdf.js — it is never uploaded anywhere —
+and nothing is written until the listed changes are approved. It reads the
+statement date, the account (`RRSP N359858R` → your RRSP), and every
+position's fund name and unit count, then shows a per-fund diff: **add**
+for funds that appeared (a new purchase, or the buy half of a switch),
+**adjust** where the unit count moved, **remove** for funds that are on
+file but no longer on the statement (a sale, or the sell half of a switch),
+and unchanged funds for completeness. Each row has a checkbox, so a partial
+import is fine.
+
+Manulife statements print fund names but no tickers, so the first import of
+a fund asks for one — with a Yahoo lookup link and the **nickname
+pre-filled** from the statement ("MANULIFE GLOBAL BALANCED FUND -FE" →
+"Manulife Global Balanced Fund -FE"), editable before saving. Each ticker
+you enter is remembered in `etf_fund_map`, so the same fund is recognized
+automatically next month. Applied imports are logged to
+`etf_statement_imports`, which is what lets the tab warn you that a
+statement has already been imported. Units are always *set* to the
+statement's values rather than added to them, so re-importing the same PDF
+can't double-count. Both tables come from `supabase/schema.sql` — re-run it
+before the first import (the import still applies holdings changes without
+them, it just can't remember tickers).
+
+`npm test` runs the parser's test suite: line reconstruction from pdf.js
+fragments, wrapped fund names, the `s`/`c` segregation sub-rows that repeat
+part of a quantity, account-type mapping, and the diff logic.
+
 A **↻ Refresh** button in the header fetches live prices
 on demand via the `refresh-prices` Supabase Edge Function
 (`supabase/functions/refresh-prices/index.ts` — deploy it once in the
@@ -81,7 +110,9 @@ reloading the last stored data and says so.
 ├── vite.config.js                   # base path for GitHub Pages
 ├── package.json                     # React 18 + Vite + supabase-js
 ├── supabase/schema.sql              # etf_* tables — paste into Supabase SQL editor (idempotent)
-├── scripts/run-signals.js           # the daily signal engine (Node, run by Actions)
+├── scripts/
+│   ├── run-signals.js               # the daily signal engine (Node, run by Actions)
+│   └── test-statement-parser.mjs    # parser tests (npm test)
 ├── .github/workflows/
 │   ├── deploy.yml                   # build + deploy to GitHub Pages on push to main
 │   └── daily-signals.yml            # weekday cron + manual run (test_email option)
@@ -90,13 +121,15 @@ reloading the last stored data and says so.
     ├── index.css                    # "ledger" theme matching tax.imetrobert.com
     ├── lib/
     │   ├── supabase.js              # client (graceful when secrets missing)
-    │   └── tickers.js               # XEQT → XEQT.TO normalization, CAD formatting
+    │   ├── tickers.js               # XEQT → XEQT.TO normalization, CAD formatting
+    │   └── statementParser.js       # Manulife statement PDF → positions + diff
     └── components/
         ├── Login.jsx                # shared-credential sign-in
-        ├── Navbar.jsx               # header + Holdings/Watchlist/Signals tabs
+        ├── Navbar.jsx               # header + Holdings/Watchlist/Signals/Import tabs
         ├── Dashboard.jsx            # holdings CRUD + values + portfolio total
         ├── Watchlist.jsx            # watchlist CRUD + price / vs-200-day
-        └── SignalHistory.jsx        # every fired signal
+        ├── SignalHistory.jsx        # every fired signal
+        └── ImportStatement.jsx      # monthly statement PDF → approve → sync holdings
 ```
 
 ## Supabase tables (shared project, `etf_` prefix)
