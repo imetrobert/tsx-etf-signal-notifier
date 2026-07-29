@@ -17,6 +17,15 @@ const ACTION_TAG = { add: 'buy', adjust: 'watch', remove: 'sell', none: 'hold' }
 
 const fmtUnits = n => Number(n).toLocaleString('en-CA', { maximumFractionDigits: 4 })
 
+// A statement date is a plain date with no timezone — anchor it to midday so it
+// can't slip to the previous day when rendered in a western timezone.
+const fmtStatementDate = d => d
+  ? new Date(`${d}T12:00:00`).toLocaleDateString('en-CA', { year: 'numeric', month: 'long', day: 'numeric' })
+  : '—'
+const fmtImportDate = iso => iso
+  ? new Date(iso).toLocaleDateString('en-CA', { year: 'numeric', month: 'long', day: 'numeric' })
+  : '—'
+
 export default function ImportStatement() {
   const [holdings, setHoldings] = useState([])
   const [fundMap, setFundMap] = useState({})
@@ -130,6 +139,30 @@ export default function ImportStatement() {
         sections.some(s => s.accountNumber === i.account_number))
     : []
 
+  // Most recent import run, and the newest statement any import has covered —
+  // they differ when an older statement is imported after a newer one.
+  const lastImport = imports[0] || null
+  const lastStatementDate = imports.reduce(
+    (latest, i) => (i.statement_date && (!latest || i.statement_date > latest) ? i.statement_date : latest), null)
+
+  // Same pair per account, so it's obvious which account is a month behind.
+  const perAccount = Object.values(imports.reduce((acc, i) => {
+    const key = i.account_number || i.account_type || '—'
+    const seen = acc[key]
+    acc[key] = {
+      key,
+      accountType: seen?.accountType || i.account_type,
+      statementDate: !seen || (i.statement_date || '') > (seen.statementDate || '') ? i.statement_date : seen.statementDate,
+      importedAt: seen?.importedAt || i.created_at, // imports arrive newest first
+    }
+    return acc
+  }, {}))
+
+  // Importing a statement older than one already applied would roll holdings
+  // back to that month's positions.
+  const staleStatement = statementDate && lastStatementDate && statementDate < lastStatementDate
+    ? lastStatementDate : null
+
   async function apply() {
     setApplying(true)
     setError('')
@@ -208,8 +241,36 @@ export default function ImportStatement() {
           <p className="muted">
             Attach the monthly PDF from Manulife Wealth. It's read on this
             device — the file is never uploaded anywhere — and every change is
-            listed for you to approve before anything is saved.
+            listed for you to approve before anything is saved. Once applied,
+            the statement becomes your Manulife holdings for the accounts it
+            covers: units are set to its numbers and funds it no longer lists
+            are removed. Wealthsimple holdings and accounts absent from the PDF
+            are never touched.
           </p>
+          <div className="form-row" style={{ marginTop: 12 }}>
+            <div>
+              <label className="field-label">Last statement</label>
+              <div className="stat-value">{fmtStatementDate(lastStatementDate)}</div>
+              <div className="muted">Date on the newest statement imported</div>
+            </div>
+            <div>
+              <label className="field-label">Last import</label>
+              <div className="stat-value">{fmtImportDate(lastImport?.created_at)}</div>
+              <div className="muted">
+                {lastImport ? 'When it was applied here' : 'No statement imported yet'}
+              </div>
+            </div>
+          </div>
+          {perAccount.length > 1 && (
+            <div style={{ marginTop: 8 }}>
+              {perAccount.map(a => (
+                <div key={a.key} className="signal-meta">
+                  {a.accountType ? acctLabel(a.accountType) : a.key}: statement{' '}
+                  {fmtStatementDate(a.statementDate)}, imported {fmtImportDate(a.importedAt)}
+                </div>
+              ))}
+            </div>
+          )}
           <div style={{ marginTop: 12 }}>
             <label className="field-label">Statement PDF</label>
             <input type="file" accept="application/pdf" onChange={onFile} disabled={parsing || loading} />
@@ -221,11 +282,24 @@ export default function ImportStatement() {
               {warnings.map((w, i) => <div key={i}>{w}</div>)}
             </div>
           )}
+          {sections.length > 0 && statementDate && (
+            <div className="signal-reasons" style={{ marginTop: 10 }}>
+              This statement is dated <strong>{fmtStatementDate(statementDate)}</strong>.
+            </div>
+          )}
           {alreadyImported.length > 0 && (
             <div className="notice" style={{ marginTop: 10 }}>
-              A statement dated {statementDate} for this account was already imported on{' '}
-              {new Date(alreadyImported[0].created_at).toLocaleDateString('en-CA')}. Applying it
-              again is harmless — units are set to the statement's values, not added to them.
+              A statement dated {fmtStatementDate(statementDate)} for this account was already
+              imported on {fmtImportDate(alreadyImported[0].created_at)}. Applying it again is
+              harmless — units are set to the statement's values, not added to them.
+            </div>
+          )}
+          {staleStatement && (
+            <div className="notice" style={{ marginTop: 10 }}>
+              This statement is older than the one you already imported
+              ({fmtStatementDate(staleStatement)}). Applying it would roll your Manulife
+              holdings back to {fmtStatementDate(statementDate)} — check you picked the
+              right PDF.
             </div>
           )}
         </div>
@@ -400,9 +474,10 @@ export default function ImportStatement() {
               {applying ? 'Applying…' : `Apply ${pending} change${pending === 1 ? '' : 's'}`}
             </button>
             <div className="muted" style={{ marginTop: 6 }}>
-              Nothing has been saved yet. Units are set to the statement's
-              values, funds missing from the statement are removed, and each
-              ticker you enter is remembered for next month.
+              Nothing has been saved yet. Applying makes this statement your
+              Manulife holdings for the account{sections.length > 1 ? 's' : ''} above —
+              units set to its values, checked funds removed — and remembers each
+              ticker you entered for next month.
             </div>
           </div>
         )}
@@ -412,9 +487,10 @@ export default function ImportStatement() {
             <h2>Previous imports</h2>
             {imports.map(i => (
               <div key={i.id} className="signal-meta">
-                {i.statement_date} · {i.account_type || i.account_number} ·{' '}
-                {(i.summary?.applied || []).length} change(s) ·{' '}
-                {new Date(i.created_at).toLocaleDateString('en-CA')}
+                Statement {fmtStatementDate(i.statement_date)} ·{' '}
+                {i.account_type ? acctLabel(i.account_type) : i.account_number} ·{' '}
+                {(i.summary?.applied || []).length} change(s) · imported{' '}
+                {fmtImportDate(i.created_at)}
               </div>
             ))}
           </div>
