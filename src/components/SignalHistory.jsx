@@ -5,8 +5,14 @@ import Navbar from './Navbar'
 
 const ACCOUNT_LABEL = { TFSA: 'TFSA', RRSP: 'RRSP', LIRA: 'Locked-in RRSP', NON_REG: 'Non-registered' }
 
+// The nickname on the holding wins; otherwise the name captured when the
+// signal fired (Yahoo's fund name); otherwise just the symbol.
+function assetName(signal, holdings) {
+  return holdings.find(h => h.fund_name)?.fund_name || signal.asset_name || null
+}
+
 function draftAdvisorEmail(signal, holdings) {
-  const name = holdings.find(h => h.fund_name)?.fund_name || displayTicker(signal.ticker)
+  const name = assetName(signal, holdings) || displayTicker(signal.ticker)
   const accounts = [...new Set(holdings.map(h => ACCOUNT_LABEL[h.account] || h.account))]
   const totalShares = holdings.reduce((s, h) => s + Number(h.shares), 0)
   const dir = signal.signal === 'BUY' ? 'BUY' : 'SELL/TRIM'
@@ -87,7 +93,9 @@ export default function SignalHistory() {
             </div>
           ) : (
             signals.map(s => {
-              const manulifeHoldings = holdings.filter(h => h.ticker === s.ticker && h.institution === 'MANULIFE')
+              const tickerHoldings = holdings.filter(h => h.ticker === s.ticker)
+              const manulifeHoldings = tickerHoldings.filter(h => h.institution === 'MANULIFE')
+              const name = assetName(s, tickerHoldings)
               const isOpen = openEmailId === s.id
               const { subject, body } = isOpen || manulifeHoldings.length
                 ? draftAdvisorEmail(s, manulifeHoldings)
@@ -96,8 +104,19 @@ export default function SignalHistory() {
                 <div key={s.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--ledger-line)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
                     <span>
-                      <span className="ticker">{displayTicker(s.ticker)}</span>{' '}
-                      <span className={`tag ${s.signal === 'BUY' ? 'buy' : 'sell'}`}>{s.signal}</span>
+                      {name ? (
+                        <>
+                          <strong>{name}</strong>{' '}
+                          <span className={`tag ${s.signal === 'BUY' ? 'buy' : 'sell'}`}>{s.signal}</span>
+                          <br />
+                          <span className="ticker muted">{displayTicker(s.ticker)}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="ticker">{displayTicker(s.ticker)}</span>{' '}
+                          <span className={`tag ${s.signal === 'BUY' ? 'buy' : 'sell'}`}>{s.signal}</span>
+                        </>
+                      )}
                     </span>
                     <span className="muted">{new Date(s.created_at).toLocaleDateString('en-CA')}</span>
                   </div>

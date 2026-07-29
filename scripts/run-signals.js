@@ -36,7 +36,26 @@ async function fetchHistory(ticker) {
     if (closes[i] != null) series.push({ date: new Date(ts[i] * 1000), close: closes[i] })
   }
   if (series.length < 210) throw new Error(`Insufficient history for ${ticker} (${series.length} days)`)
-  return { series, currency: result.meta?.currency || 'CAD' }
+  return {
+    series,
+    currency: result.meta?.currency || 'CAD',
+    // Yahoo's own name for the security — used when the holding has no nickname.
+    name: result.meta?.longName || result.meta?.shortName || null,
+  }
+}
+
+// ---------- naming ----------
+// Codes like 0P0000768R.TO are unreadable in an alert, so every signal carries
+// a human name: the nickname set on the holding, else Yahoo's fund name.
+
+function displaySymbol(ticker) {
+  return ticker.replace(/\.TO$/, '')
+}
+
+// "RBC Select Balanced (0P0000768R)" — or just the symbol when no name is known.
+function assetLabel(ticker, name) {
+  const sym = displaySymbol(ticker)
+  return name && name !== sym ? `${name} (${sym})` : sym
 }
 
 // ---------- indicators ----------
@@ -109,7 +128,7 @@ function reversionEstimate(series) {
 
 // ---------- signal evaluation ----------
 
-function evaluate(ticker, ind, lastState, series) {
+function evaluate(ticker, label, ind, lastState, series) {
   const stateKey = `${ind.trend}|${ind.stretch}`
   if (lastState == null) return { stateKey, signal: null } // first run: baseline only
   if (stateKey === lastState) return { stateKey, signal: null }
@@ -136,7 +155,7 @@ function evaluate(ticker, ind, lastState, series) {
     return { stateKey, signal: null }
   }
   const dir = triggers[0].dir
-  const reasons = `Signal for ${ticker}: ` + triggers.map(t => t.text).join('; ') + '.'
+  const reasons = `Signal for ${label}: ` + triggers.map(t => t.text).join('; ') + '.'
   const est = dir === 'BUY' ? recoveryEstimate(series) : reversionEstimate(series)
   return { stateKey, signal: { dir, reasons, est } }
 }
@@ -285,6 +304,11 @@ function regimeHtml(regime) {
 
 // ---------- email ----------
 
+// Names come from user-entered nicknames and Yahoo, so escape before embedding.
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 async function sendEmail(signals, regime, regimeChange) {
   const { EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, EMAILJS_PUBLIC_KEY, EMAILJS_PRIVATE_KEY, NOTIFY_EMAIL } = process.env
   if (!EMAILJS_SERVICE_ID || !EMAILJS_TEMPLATE_ID || !EMAILJS_PUBLIC_KEY || !EMAILJS_PRIVATE_KEY || !NOTIFY_EMAIL) {
@@ -297,7 +321,11 @@ async function sendEmail(signals, regime, regimeChange) {
   if (buys) parts.push(`${buys} BUY`)
   if (sells) parts.push(`${sells} SELL/TRIM`)
   if (regimeChange) parts.push(`market regime now ${regimeChange.to}`)
-  const subject = `ETF Signals: ${parts.join(', ')}`
+  // Name the assets in the subject when there are only one or two, so the alert
+  // is identifiable from a phone notification without opening it.
+  const named = signals.slice(0, 2).map(s => s.name || displaySymbol(s.ticker))
+  const subjectNames = signals.length && signals.length <= 2 ? ` — ${named.join(', ')}` : ''
+  const subject = `ETF Signals: ${parts.join(', ')}${subjectNames}`
 
   const regimeChangeBlock = regimeChange
     ? `<div style="margin-bottom:18px">
@@ -310,9 +338,10 @@ async function sendEmail(signals, regime, regimeChange) {
 
   const content = regimeChangeBlock + signals.map(s =>
     `<div style="margin-bottom:18px">
-      <strong>${s.ticker.replace('.TO', '')} — ${s.dir === 'BUY' ? 'BUY' : 'SELL / TRIM'}</strong>
+      <strong>${esc(s.name || displaySymbol(s.ticker))} — ${s.dir === 'BUY' ? 'BUY' : 'SELL / TRIM'}</strong>
       (${s.price.toFixed(2)} CAD)<br/>
-      ${s.reasons}<br/>
+      ${s.name ? `<span style="color:#888;font-size:12px">${esc(s.ticker)}</span><br/>` : ''}
+      ${esc(s.reasons)}<br/>
       <em>${s.est}</em><br/>
       ${s.advice ? `<span style="color:#2b4a4d">${s.advice}</span><br/>` : ''}
       <span style="color:#555">${regimeNote(s.dir, regime.level)}</span>
@@ -339,7 +368,7 @@ async function sendEmail(signals, regime, regimeChange) {
 
 async function main() {
   const [holdings, watchlist, states] = await Promise.all([
-    db.from('etf_holdings').select('ticker, account'),
+    db.from('etf_holdings').select('ticker, account, fund_name'),
     db.from('etf_watchlist').select('ticker'),
     db.from('etf_signal_state').select('*'),
   ])
@@ -347,7 +376,11 @@ async function main() {
 
   const tickers = [...new Set([...holdings.data, ...watchlist.data].map(r => r.ticker))]
   const accountsByTicker = {}
-  for (const r of holdings.data) (accountsByTicker[r.ticker] ??= []).push(r.account || 'NON_REG')
+  const nicknameByTicker = {}
+  for (const r of holdings.data) {
+    ;(accountsByTicker[r.ticker] ??= []).push(r.account || 'NON_REG')
+    if (r.fund_name) nicknameByTicker[r.ticker] ??= r.fund_name
+  }
   const lastStates = Object.fromEntries(states.data.map(r => [r.ticker, r.last_state]))
   console.log(`Evaluating ${tickers.length} tickers: ${tickers.join(', ')}`)
 
@@ -373,9 +406,10 @@ async function main() {
 
   for (const ticker of tickers) {
     try {
-      const { series, currency } = await fetchHistory(ticker)
+      const { series, currency, name: yahooName } = await fetchHistory(ticker)
+      const name = nicknameByTicker[ticker] || yahooName || null
       const ind = computeIndicators(series)
-      const { stateKey, signal } = evaluate(ticker, ind, lastStates[ticker] ?? null, series)
+      const { stateKey, signal } = evaluate(ticker, assetLabel(ticker, name), ind, lastStates[ticker] ?? null, series)
 
       const { error: pErr } = await db.from('etf_prices').upsert({
         ticker,
@@ -394,16 +428,22 @@ async function main() {
       })
       if (sErr) throw new Error(sErr.message)
 
-      console.log(`  ${ticker}: ${ind.price.toFixed(2)} ${currency}, MA50 ${ind.ma50.toFixed(2)}, MA200 ${ind.ma200.toFixed(2)} (${ind.pctVsMa200 >= 0 ? '+' : ''}${ind.pctVsMa200.toFixed(1)}%), state ${stateKey}${signal ? ` → ${signal.dir}` : ''}`)
+      console.log(`  ${assetLabel(ticker, name)}: ${ind.price.toFixed(2)} ${currency}, MA50 ${ind.ma50.toFixed(2)}, MA200 ${ind.ma200.toFixed(2)} (${ind.pctVsMa200 >= 0 ? '+' : ''}${ind.pctVsMa200.toFixed(1)}%), state ${stateKey}${signal ? ` → ${signal.dir}` : ''}`)
 
       if (signal) {
         const advice = accountAdvice(signal.dir, accountsByTicker[ticker] || [])
-        const { error } = await db.from('etf_signals').insert({
+        const row = {
           ticker, signal: signal.dir, reasons: signal.reasons,
           est_recovery_text: signal.est, account_advice: advice, price: ind.price,
-        })
+        }
+        let { error } = await db.from('etf_signals').insert({ ...row, asset_name: name })
+        if (error?.message?.includes('asset_name')) {
+          // Column missing — installs that haven't re-run supabase/schema.sql yet.
+          console.warn('  etf_signals.asset_name missing (re-run supabase/schema.sql) — saving without the name')
+          ;({ error } = await db.from('etf_signals').insert(row))
+        }
         if (error) throw new Error(error.message)
-        fired.push({ ticker, dir: signal.dir, reasons: signal.reasons, est: signal.est, advice, price: ind.price })
+        fired.push({ ticker, name, dir: signal.dir, reasons: signal.reasons, est: signal.est, advice, price: ind.price })
       }
       await new Promise(r => setTimeout(r, 400)) // be polite to Yahoo
     } catch (e) {
@@ -415,8 +455,8 @@ async function main() {
   if (process.env.TEST_EMAIL === 'true' && fired.length === 0) {
     console.log('TEST_EMAIL requested — sending a sample alert.')
     fired.push({
-      ticker: 'TEST.TO', dir: 'BUY', price: 12.34,
-      reasons: 'Signal for TEST.TO: this is a test alert to confirm email delivery works. No real signal fired.',
+      ticker: 'TEST.TO', name: 'Test Fund', dir: 'BUY', price: 12.34,
+      reasons: 'Signal for Test Fund (TEST): this is a test alert to confirm email delivery works. No real signal fired.',
       est: 'If you can read this, notifications are configured correctly.',
     })
   }
