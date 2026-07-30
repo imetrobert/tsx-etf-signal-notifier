@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { normalizeTicker, displayTicker, fmtCad } from '../lib/tickers'
-import { parseStatementPdf, diffPositions, normalizeFundName } from '../lib/statementParser'
+import { parseStatementPdf, diffPositions, normalizeFundName, searchableFundName } from '../lib/statementParser'
 import Navbar from './Navbar'
 
 const ACCOUNTS = [
@@ -98,6 +98,7 @@ export default function ImportStatement() {
   const [warnings, setWarnings] = useState([])
   const [diagnostics, setDiagnostics] = useState(null)
   const [copiedDiagnostics, setCopiedDiagnostics] = useState(false)
+  const [lookups, setLookups] = useState({})
   const [sections, setSections] = useState([])
   const [applying, setApplying] = useState(false)
   const [result, setResult] = useState(null)
@@ -152,6 +153,32 @@ export default function ImportStatement() {
   function setSectionAccount(idx, accountType) {
     setSections(prev => prev.map((s, i) =>
       i === idx ? sectionRows({ ...s, accountType }, holdings, fundMap, s.rows) : s))
+  }
+
+  // Looks the fund up by name so its ticker doesn't have to be researched by
+  // hand. Yahoo's search has no CORS headers, so it is proxied by the
+  // refresh-prices edge function.
+  async function findTicker(row) {
+    const query = searchableFundName(row.statementName)
+    setLookups(prev => ({ ...prev, [row.key]: { loading: true, query } }))
+    try {
+      const { data, error } = await supabase.functions.invoke('refresh-prices', {
+        body: { action: 'search', query },
+      })
+      if (error) throw new Error('lookup unavailable')
+      setLookups(prev => ({
+        ...prev,
+        [row.key]: { loading: false, query, results: data?.results || [], error: data?.error },
+      }))
+    } catch {
+      setLookups(prev => ({
+        ...prev,
+        [row.key]: {
+          loading: false, query, results: [],
+          error: "Lookup unavailable — redeploy the refresh-prices edge function to enable it.",
+        },
+      }))
+    }
   }
 
   // Structure only — page/fragment counts and which markers were recognized —
@@ -528,15 +555,44 @@ export default function ImportStatement() {
                                       })
                                     }}
                                   />
-                                  {needsTicker && (
-                                    <div className="muted" style={{ marginTop: 3 }}>
-                                      Not seen before — enter its ticker, or{' '}
-                                      <a
-                                        href={`https://finance.yahoo.com/lookup/?s=${encodeURIComponent(row.statementName)}`}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                      >look it up
-                                      </a>.
+                                  {needsTicker && !lookups[row.key] && (
+                                    <div style={{ marginTop: 4 }}>
+                                      <button className="btn small secondary" onClick={() => findTicker(row)}>
+                                        Find ticker
+                                      </button>
+                                    </div>
+                                  )}
+                                  {lookups[row.key]?.loading && (
+                                    <div className="muted" style={{ marginTop: 4 }}>
+                                      <span className="spin" /> Searching…
+                                    </div>
+                                  )}
+                                  {lookups[row.key] && !lookups[row.key].loading && (
+                                    <div style={{ marginTop: 4 }}>
+                                      <div className="muted">Searched “{lookups[row.key].query}”</div>
+                                      {lookups[row.key].results?.map(hit => (
+                                        <button
+                                          key={hit.symbol}
+                                          className="btn small secondary"
+                                          style={{ margin: '3px 3px 0 0', textAlign: 'left' }}
+                                          onClick={() => updateRow(sIdx, row.key, {
+                                            ticker: hit.symbol, tickerEdited: true, include: true,
+                                            nickname: row.nicknameEdited ? row.nickname : (hit.name || row.nickname),
+                                          })}
+                                        >
+                                          <span className="ticker">{hit.symbol}</span> {hit.name}
+                                        </button>
+                                      ))}
+                                      {!lookups[row.key].results?.length && (
+                                        <div className="muted">
+                                          {lookups[row.key].error || 'Nothing found — enter the ticker or FundSERV code by hand.'}{' '}
+                                          <a
+                                            href={`https://www.theglobeandmail.com/investing/markets/funds/finder/`}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                          >Fund finder</a>
+                                        </div>
+                                      )}
                                     </div>
                                   )}
                                 </>
