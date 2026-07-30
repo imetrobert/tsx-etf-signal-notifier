@@ -20,12 +20,13 @@
 const Y_TOL = 1.2 // items whose baselines are within this many points share a line
 const SPACE_GAP = 1 // a horizontal gap this wide means a space was rendered
 
-// Column boundaries in PDF points, taken from the table's header positions.
-const X_QTY = 240
-const X_BOOK_UNIT = 300
-const X_BOOK_TOTAL = 375
-const X_MKT_UNIT = 450
-const X_MKT_TOTAL = 515
+// Figures are read by position within the row rather than by fixed x
+// coordinates, so a restyled statement with shifted columns still parses.
+// A number's decimal point or thousands comma can arrive as its own fragment
+// ("14," + "829" + "." + "88"), so a cell needs no digit of its own to belong to
+// the run — only the assembled token has to parse as a number.
+const NUMERIC_PART = /^[\d.,$()%-]+$/
+const COL_GAP = 6 // cells further apart than this are separate columns, not one number
 
 // A wrapped fund name sits directly under its row; anything further away is
 // unrelated text (footnotes, the next section) and must not be appended.
@@ -34,7 +35,14 @@ const WRAP_MAX_LEN = 60
 
 const HOLDINGS_START = /^Investment Funds and Deposit Notes/i
 const HOLDINGS_END = /^(Total Investment Funds|Cash and Cash Equivalents|Total in Your Account)/i
-const COLUMN_HEADER = /^Quantity/i
+// The holdings table's own column header, used to reopen the table where it
+// continues onto another page. It must name a per-unit or book-cost column: the
+// Activity table of transactions also has a "Quantity" column, and its rows
+// (units, price, amount) would otherwise read as positions.
+const COLUMN_HEADER = /Quantity/i
+const HOLDINGS_COLUMN = /(Per Unit|Book Cost|Market Value)/i
+// Sections that follow the table; reaching one means the table is over.
+const SECTION_BREAK = /^(Activity|Summary of Income|Important Information|Your Account Performance)/i
 
 // Manulife account labels → the account types this app tracks.
 const ACCOUNT_TYPES = [
@@ -98,25 +106,66 @@ export function joinCells(cells) {
 
 // Numbers arrive fragmented and comma-grouped ("58" + "," + "884.78"), so drop
 // everything that isn't part of the number before parsing.
-function num(cells) {
-  if (!cells.length) return null
-  const raw = cells.map(c => c.str).join('').replace(/[\s$,]/g, '')
+function num(text) {
+  const raw = String(text).replace(/[\s$,]/g, '').replace(/^\((.*)\)$/, '-$1')
   if (!/^-?\d*\.?\d+$/.test(raw)) return null
   const n = Number(raw)
   return Number.isFinite(n) ? n : null
 }
 
-function columns(line) {
-  const pick = (lo, hi) => line.cells.filter(c => c.x >= lo && c.x < hi)
-  return {
-    name: joinCells(pick(-Infinity, X_QTY)),
-    quantity: num(pick(X_QTY, X_BOOK_UNIT)),
-    bookUnit: num(pick(X_BOOK_UNIT, X_BOOK_TOTAL)),
-    bookTotal: num(pick(X_BOOK_TOTAL, X_MKT_UNIT)),
-    unitPrice: num(pick(X_MKT_UNIT, X_MKT_TOTAL)),
-    marketValue: num(pick(X_MKT_TOTAL, Infinity)),
+// Splits a line into its leading text and the run of figures that ends it.
+//
+// Reading the figures right-to-left is what makes this layout-independent: the
+// table's numbers are always the last thing on the row, so a name that itself
+// ends in a number ("TARGET CLICK 2030") can't be mistaken for one — the run
+// stops at the first non-numeric cell, and only the rightmost columns count.
+export function rowValues(line) {
+  const cells = line.cells
+  let i = cells.length
+  const figures = []
+  let token = null
+  while (i > 0 && NUMERIC_PART.test(cells[i - 1].str)) {
+    i--
+    const cell = cells[i]
+    if (token && token.x - cell.end <= COL_GAP) {
+      token = { x: cell.x, end: token.end, str: cell.str + token.str } // same number
+    } else {
+      if (token) figures.unshift(token)
+      token = { x: cell.x, end: cell.end, str: cell.str }
+    }
   }
+  if (token) figures.unshift(token)
+  const values = figures.map(f => num(f.str)).filter(v => v != null)
+  return { text: joinCells(cells.slice(0, i)), values }
 }
+
+// Maps a row's figures onto the three columns that matter, without assuming how
+// many columns the statement prints. The row always ends with the market value
+// per unit and in total, and opens with the quantity — so the shape is
+// (first, second-last, last) whether or not book cost sits between them.
+//
+// Every row carries its own proof: units × price is the market value. That
+// settles the one real ambiguity — a fund name ending in a number ("TARGET
+// CLICK 2030") looks like a leading figure — and means a column layout that
+// isn't understood is rejected rather than silently misread.
+function figuresToPosition(values) {
+  const candidates = []
+  const shape = vals => ({ quantity: vals[0], unitPrice: vals.at(-2), marketValue: vals.at(-1) })
+  if (values.length >= 3) candidates.push(shape(values))
+  // Retry dropping leading figures, in case they belong to the fund's name.
+  for (let drop = 1; drop <= values.length - 3; drop++) candidates.push(shape(values.slice(drop)))
+
+  for (const c of candidates) {
+    if (!(c.quantity > 0) || !(c.unitPrice > 0) || c.marketValue == null) continue
+    const implied = c.quantity * c.unitPrice
+    if (Math.abs(implied - c.marketValue) <= Math.max(0.01 * Math.abs(c.marketValue), 0.02)) return c
+  }
+  return null
+}
+
+// Fund names always carry real words; a stray "s" or "c" segregation marker
+// beside a repeated part-quantity does not.
+const hasWords = text => /[A-Za-z]{2,}/.test(text)
 
 // ---------- fund names ----------
 
@@ -157,6 +206,9 @@ export function parsePages(pages) {
   const accounts = new Map()
   let statementDate = null
   let currentAccount = null
+  // Recorded per page so a statement that doesn't parse can say why — a scanned
+  // PDF has no text items at all, an unrecognized layout has text but no table.
+  const diagnostics = { pageCount: pages.length, pages: [] }
 
   for (const page of pages) {
     const lines = page.lines
@@ -190,43 +242,60 @@ export function parsePages(pages) {
       }
     }
 
+    const seen = {
+      page: diagnostics.pages.length + 1,
+      textItems: lines.reduce((n, l) => n + l.cells.length, 0),
+      account: currentAccount != null,
+      tableLabel: false,
+      columnHeader: false,
+      tableEnd: false,
+      figureRows: 0,
+      positions: 0,
+    }
+    diagnostics.pages.push(seen)
+
     let inHoldings = false
     let last = null // { position, y } — the row a wrapped name would belong to
     for (const line of lines) {
-      const col = columns(line)
-      const text = col.name
+      const { text, values } = rowValues(line)
 
-      if (HOLDINGS_END.test(text)) {
+      if (HOLDINGS_END.test(text) || (SECTION_BREAK.test(text) && !values.length)) {
+        seen.tableEnd = true
         inHoldings = false
         last = null
         continue
       }
-      if (HOLDINGS_START.test(text) || (COLUMN_HEADER.test(text) && col.quantity == null)) {
+      if (HOLDINGS_START.test(text)) {
+        seen.tableLabel = true
+        inHoldings = true
+        last = null
+        continue
+      }
+      if (COLUMN_HEADER.test(text) && HOLDINGS_COLUMN.test(text) && !values.length) {
+        seen.columnHeader = true
         inHoldings = true
         last = null
         continue
       }
       if (!inHoldings) continue
+      if (values.length) seen.figureRows++
 
-      // A position: a name alongside a quantity and a market value.
-      if (text && col.quantity != null && col.marketValue != null) {
-        const position = {
-          name: text,
-          quantity: col.quantity,
-          unitPrice: col.unitPrice,
-          marketValue: col.marketValue,
-        }
+      // A position: a named row ending in the table's figures.
+      const figures = hasWords(text) ? figuresToPosition(values) : null
+      if (figures && figures.quantity != null && figures.marketValue != null) {
         if (!currentAccount) {
           warnings.push('Found holdings before any account number — the statement header may be in an unexpected format.')
           continue
         }
+        const position = { name: text, ...figures }
         accounts.get(currentAccount).positions.push(position)
+        seen.positions++
         last = { position, y: line.y }
         continue
       }
 
-      // A wrapped fund name: text only, directly beneath the row it extends.
-      if (text && col.quantity == null && col.marketValue == null && last &&
+      // A wrapped fund name: words only, directly beneath the row it extends.
+      if (!values.length && hasWords(text) && last &&
           last.y - line.y <= WRAP_MAX_GAP && text.length <= WRAP_MAX_LEN) {
         last.position.name += ` ${text}`
         continue
@@ -240,11 +309,22 @@ export function parsePages(pages) {
   for (const acct of list) {
     for (const p of acct.positions) p.name = p.name.replace(/\s+/g, ' ').trim()
   }
+  diagnostics.textItems = diagnostics.pages.reduce((n, p) => n + p.textItems, 0)
+  diagnostics.figureRows = diagnostics.pages.reduce((n, p) => n + p.figureRows, 0)
+  diagnostics.sawTable = diagnostics.pages.some(p => p.tableLabel || p.columnHeader)
+  diagnostics.sawAccount = diagnostics.pages.some(p => p.account)
+
   if (!list.length) {
-    warnings.push('No holdings table found — is this a Manulife Securities statement?')
+    if (!diagnostics.textItems) {
+      warnings.push('This PDF has no readable text — it looks like a scan or an image, so there is nothing to extract. Download the statement PDF from Manulife rather than a photo or printout of it.')
+    } else if (!diagnostics.sawTable) {
+      warnings.push("Read the PDF, but couldn't find the holdings table — the statement layout may have changed. The details below will pin down what's different.")
+    } else {
+      warnings.push("Found the holdings table but couldn't read any positions from it — the columns may have moved. The details below will pin down what's different.")
+    }
   }
   if (!statementDate) warnings.push('No statement date found on the PDF.')
-  return { statementDate, accounts: list, warnings: [...new Set(warnings)] }
+  return { statementDate, accounts: list, warnings: [...new Set(warnings)], diagnostics }
 }
 
 // Loads pdf.js on demand (it is large) with its worker bundled locally, so no

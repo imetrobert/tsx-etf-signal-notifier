@@ -34,8 +34,11 @@ export default function ImportStatement() {
   const [error, setError] = useState('')
   const [parsing, setParsing] = useState(false)
   const [fileName, setFileName] = useState('')
+  const [fileSize, setFileSize] = useState(0)
   const [statementDate, setStatementDate] = useState(null)
   const [warnings, setWarnings] = useState([])
+  const [diagnostics, setDiagnostics] = useState(null)
+  const [copiedDiagnostics, setCopiedDiagnostics] = useState(false)
   const [sections, setSections] = useState([])
   const [applying, setApplying] = useState(false)
   const [result, setResult] = useState(null)
@@ -67,11 +70,15 @@ export default function ImportStatement() {
     setError('')
     setResult(null)
     setSections([])
+    setWarnings([])
+    setDiagnostics(null)
     setFileName(file.name)
+    setFileSize(file.size)
     try {
       const parsed = await parseStatementPdf(await file.arrayBuffer())
       setStatementDate(parsed.statementDate)
       setWarnings(parsed.warnings)
+      setDiagnostics(parsed.diagnostics || null)
       setSections(parsed.accounts.map(acct => {
         const mine = holdings.filter(h => (h.account || 'NON_REG') === acct.accountType)
         return {
@@ -117,6 +124,19 @@ export default function ImportStatement() {
         }),
       }
     }))
+  }
+
+  // Structure only — page/fragment counts and which markers were recognized —
+  // so it can be pasted into a bug report without exposing holdings.
+  async function copyDiagnostics() {
+    const text = JSON.stringify({ fileName, fileSize, statementDate, warnings, diagnostics }, null, 1)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedDiagnostics(true)
+      setTimeout(() => setCopiedDiagnostics(false), 2000)
+    } catch {
+      setError(text) // clipboard blocked — show it so it can be copied by hand
+    }
   }
 
   function updateRow(sIdx, key, patch) {
@@ -275,11 +295,43 @@ export default function ImportStatement() {
             <label className="field-label">Statement PDF</label>
             <input type="file" accept="application/pdf" onChange={onFile} disabled={parsing || loading} />
           </div>
+          {fileName && (
+            <div className="muted" style={{ marginTop: 6 }}>
+              {parsing ? 'Reading' : 'Read'} {fileName}
+              {fileSize ? ` (${(fileSize / 1024 / 1024).toFixed(1)} MB)` : ''}
+            </div>
+          )}
           {parsing && <div className="muted" style={{ marginTop: 10 }}><span className="spin" /> Reading the statement…</div>}
           {error && <div className="err">{error}</div>}
-          {warnings.length > 0 && sections.length > 0 && (
+          {warnings.length > 0 && (
             <div className="notice" style={{ marginTop: 10 }}>
               {warnings.map((w, i) => <div key={i}>{w}</div>)}
+            </div>
+          )}
+          {!parsing && diagnostics && sections.length === 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div className="field-label">What was read</div>
+              <div className="signal-meta">
+                {diagnostics.pageCount} page(s), {diagnostics.textItems} text fragments,{' '}
+                {diagnostics.figureRows} numeric row(s) inside a table.
+              </div>
+              <div className="signal-meta">
+                Account number found: {diagnostics.sawAccount ? 'yes' : 'no'} · holdings table
+                found: {diagnostics.sawTable ? 'yes' : 'no'} · statement date found:{' '}
+                {statementDate ? 'yes' : 'no'}
+              </div>
+              <button
+                className="btn small secondary"
+                style={{ marginTop: 8 }}
+                onClick={() => copyDiagnostics()}
+              >
+                {copiedDiagnostics ? 'Copied!' : 'Copy details'}
+              </button>
+              <div className="muted" style={{ marginTop: 6 }}>
+                These details describe the PDF's structure only — no fund names,
+                amounts or account numbers — so they're safe to share when
+                reporting a statement that won't import.
+              </div>
             </div>
           )}
           {sections.length > 0 && statementDate && (

@@ -62,6 +62,10 @@ const holdingsPage = [
   ...[item('September', 497.7, 749.5), item('30,', 550, 749.5), item('2023', 568, 749.5)],
   item('Holdings', 67.5, 538),
   item('Quantity', 261.8, 514),
+  item('Per Unit ($)', 327.2, 513.5),
+  item('Total ($)', 403.3, 513.5),
+  item('Per Unit ($)', 463, 513.5),
+  item('Total ($)', 548.1, 513.5),
   item('Investment Funds and Deposit Notes', 67.5, 492.5),
 
   // a plain position
@@ -146,8 +150,11 @@ const continuationPage = [
 
 console.log('\naccount types')
 {
+  // A realistic row: name, quantity, book cost per unit + total, market value
+  // per unit + total. 10 units at $10 is $100.
   const page = n => linesFrom([item(n, 500, 759.5), item('Investment Funds and Deposit Notes', 67.5, 700),
-    item('SOME FUND -FE', 71.6, 680), item('10.0000', 258.5, 680), item('100.00', 544.5, 680)])
+    item('SOME FUND -FE', 71.6, 680), item('10.0000', 258.5, 680), item('9.5000', 338.4, 680),
+    item('95.00', 400, 680), item('10.0000', 474.1, 680), item('100.00', 544.5, 680)])
   const type = n => parsePages([{ lines: page(n) }]).accounts[0]?.accountType
   check('TFSA', type('TFSA N123456A'), 'TFSA')
   check('LIRA', type('LIRA N123456A'), 'LIRA')
@@ -157,6 +164,47 @@ console.log('\naccount types')
   const unknown = parsePages([{ lines: page('N123456A') }])
   check('unknown label leaves the type blank', unknown.accounts[0].accountType, null)
   check('and warns', unknown.warnings.some(w => /what kind of account/.test(w)), true)
+}
+
+console.log('\ncolumn layouts')
+{
+  // Figures are read as (first, second-last, last) and checked against
+  // units × price, so the same row parses whether or not the statement prints
+  // book cost — and a fund name ending in a number isn't mistaken for one.
+  const row = (...cells) => linesFrom([
+    item('Investment Funds and Deposit Notes', 67.5, 700),
+    ...cells.map(([str, x]) => item(str, x, 680)),
+    item('RRSP N123456A', 500, 759.5),
+  ])
+  const parse = lines => parsePages([{ lines }]).accounts[0]?.positions?.[0] ?? null
+
+  check('five figure columns (book cost shown)', parse(row(
+    ['A FUND -FE', 71.6], ['524.7593', 251.6], ['9.9899', 338.4], ['5,242.27', 395.2],
+    ['9.6371', 474.1], ['5,057.16', 539.8],
+  )), { name: 'A FUND -FE', quantity: 524.7593, unitPrice: 9.6371, marketValue: 5057.16 })
+
+  check('four figure columns (book cost total only)', parse(row(
+    ['A FUND -FE', 71.6], ['524.7593', 251.6], ['5,242.27', 395.2], ['9.6371', 474.1], ['5,057.16', 539.8],
+  )), { name: 'A FUND -FE', quantity: 524.7593, unitPrice: 9.6371, marketValue: 5057.16 })
+
+  check('three figure columns (no book cost)', parse(row(
+    ['A FUND -FE', 71.6], ['524.7593', 251.6], ['9.6371', 474.1], ['5,057.16', 539.8],
+  )), { name: 'A FUND -FE', quantity: 524.7593, unitPrice: 9.6371, marketValue: 5057.16 })
+
+  check('a name ending in a number is not read as a figure', parse(row(
+    ['IA CLARINGTON TARGET CLICK 2030', 71.6], ['889.1130', 251.6], ['15.2630', 338.4],
+    ['13,570.54', 395.2], ['13.1945', 474.1], ['11,731.40', 539.8],
+  )), { name: 'IA CLARINGTON TARGET CLICK 2030', quantity: 889.113, unitPrice: 13.1945, marketValue: 11731.4 })
+
+  check('figures that do not multiply out are rejected', parse(row(
+    ['A FUND -FE', 71.6], ['1.0000', 251.6], ['99.9999', 474.1], ['12,345.67', 539.8],
+  )), null)
+
+  // Column positions are never assumed: the same row shifted 90pt right parses.
+  check('shifted columns still parse', parse(row(
+    ['A FUND -FE', 71.6], ['524.7593', 341.6], ['9.9899', 428.4], ['5,242.27', 485.2],
+    ['9.6371', 564.1], ['5,057.16', 629.8],
+  )), { name: 'A FUND -FE', quantity: 524.7593, unitPrice: 9.6371, marketValue: 5057.16 })
 }
 
 console.log('\ndiff against stored holdings')
