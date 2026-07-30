@@ -26,6 +26,65 @@ const fmtImportDate = iso => iso
   ? new Date(iso).toLocaleDateString('en-CA', { year: 'numeric', month: 'long', day: 'numeric' })
   : '—'
 
+// The statement's accounts are grouped by the app account they map to, because
+// a statement can hold several that land in the same one — a CAD and a USD cash
+// account are both non-registered. Left separate, each would see the other's
+// funds as missing from the statement and propose removing them.
+function buildSections(accounts, holdings, fundMap) {
+  const groups = new Map()
+  for (const acct of accounts) {
+    const key = acct.accountType || `unknown:${acct.accountNumber}`
+    const group = groups.get(key) || { key, accountType: acct.accountType || '', sources: [], positions: [] }
+    group.sources.push({
+      number: acct.accountNumber,
+      label: acct.accountLabel,
+      currency: acct.currency || 'CAD',
+    })
+    for (const p of acct.positions) {
+      // One app holding per fund per account, so a fund held in two of the
+      // grouped accounts is one position holding the combined units.
+      const norm = normalizeFundName(p.name)
+      const existing = group.positions.find(q => normalizeFundName(q.name) === norm)
+      if (existing) {
+        existing.quantity += p.quantity
+        existing.marketValue += p.marketValue || 0
+      } else {
+        group.positions.push({ ...p, currency: acct.currency || 'CAD' })
+      }
+    }
+    groups.set(key, group)
+  }
+  return [...groups.values()].map(g => sectionRows(g, holdings, fundMap))
+}
+
+// Builds (or rebuilds) a section's diff against the holdings of its app account.
+function sectionRows(group, holdings, fundMap, previousRows) {
+  const mine = group.accountType
+    ? holdings.filter(h => (h.account || 'NON_REG') === group.accountType)
+    : []
+  const edited = new Map((previousRows || []).map(r => [r.key, r]))
+  const totals = {}
+  for (const p of group.positions) {
+    totals[p.currency || 'CAD'] = (totals[p.currency || 'CAD'] || 0) + (p.marketValue || 0)
+  }
+  return {
+    ...group,
+    totals,
+    rows: diffPositions(group.positions, mine, fundMap).map(r => {
+      const before = edited.get(r.key)
+      const ticker = before?.tickerEdited ? before.ticker : r.ticker
+      return {
+        ...r,
+        ticker,
+        tickerEdited: before?.tickerEdited,
+        nickname: before?.nicknameEdited ? before.nickname : r.nickname,
+        nicknameEdited: before?.nicknameEdited,
+        include: r.action !== 'none' && !(r.action === 'add' && !ticker.trim()),
+      }
+    }),
+  }
+}
+
 export default function ImportStatement() {
   const [holdings, setHoldings] = useState([])
   const [fundMap, setFundMap] = useState({})
@@ -79,17 +138,7 @@ export default function ImportStatement() {
       setStatementDate(parsed.statementDate)
       setWarnings(parsed.warnings)
       setDiagnostics(parsed.diagnostics || null)
-      setSections(parsed.accounts.map(acct => {
-        const mine = holdings.filter(h => (h.account || 'NON_REG') === acct.accountType)
-        return {
-          accountNumber: acct.accountNumber,
-          accountLabel: acct.accountLabel,
-          accountType: acct.accountType || '',
-          statementTotal: acct.positions.reduce((s, p) => s + (p.marketValue || 0), 0),
-          rows: diffPositions(acct.positions, acct.accountType ? mine : [], fundMap)
-            .map(r => ({ ...r, include: r.action !== 'none' && !(r.action === 'add' && !r.ticker) })),
-        }
-      }))
+      setSections(buildSections(parsed.accounts, holdings, fundMap))
     } catch (err) {
       setError(`Couldn't read that PDF: ${err.message}`)
       setSections([])
@@ -101,29 +150,8 @@ export default function ImportStatement() {
   // Changing the account type re-diffs that section against the holdings in the
   // newly chosen account.
   function setSectionAccount(idx, accountType) {
-    setSections(prev => prev.map((s, i) => {
-      if (i !== idx) return s
-      const mine = holdings.filter(h => (h.account || 'NON_REG') === accountType)
-      const positions = s.rows.filter(r => r.action !== 'remove')
-        .map(r => ({ name: r.statementName, quantity: r.quantity, unitPrice: r.unitPrice, marketValue: r.marketValue }))
-      const edited = new Map(s.rows.map(r => [r.key, r]))
-      return {
-        ...s,
-        accountType,
-        rows: diffPositions(positions, accountType ? mine : [], fundMap).map(r => {
-          const before = edited.get(r.key)
-          const ticker = before?.tickerEdited ? before.ticker : r.ticker
-          return {
-            ...r,
-            ticker,
-            tickerEdited: before?.tickerEdited,
-            nickname: before?.nicknameEdited ? before.nickname : r.nickname,
-            nicknameEdited: before?.nicknameEdited,
-            include: r.action !== 'none' && !(r.action === 'add' && !ticker),
-          }
-        }),
-      }
-    }))
+    setSections(prev => prev.map((s, i) =>
+      i === idx ? sectionRows({ ...s, accountType }, holdings, fundMap, s.rows) : s))
   }
 
   // Structure only — page/fragment counts and which markers were recognized —
@@ -153,10 +181,16 @@ export default function ImportStatement() {
     () => sections.flatMap(s => s.rows.filter(r => r.action === 'add' && !r.ticker.trim())).length,
     [sections])
   const noAccount = sections.some(s => !s.accountType)
+  // Two sections pointing at one app account would each try to remove the
+  // other's funds, so that has to be resolved before anything is written.
+  const clashingAccounts = sections
+    .map(s => s.accountType)
+    .filter((t, i, all) => t && all.indexOf(t) !== i)
+    .map(acctLabel)
 
   const alreadyImported = statementDate
     ? imports.filter(i => i.statement_date === statementDate &&
-        sections.some(s => s.accountNumber === i.account_number))
+        sections.some(s => s.sources.some(src => (i.account_number || '').includes(src.number))))
     : []
 
   // Most recent import run, and the newest statement any import has covered —
@@ -236,11 +270,11 @@ export default function ImportStatement() {
       if (applied.length) {
         const { error } = await supabase.from('etf_statement_imports').insert({
           statement_date: statementDate,
-          account_number: section.accountNumber,
+          account_number: section.sources.map(s => s.number).join(', '),
           account_type: section.accountType,
           institution: 'MANULIFE',
           file_name: fileName,
-          summary: { applied },
+          summary: { applied, accounts: section.sources },
         })
         if (error) remembered = false
       }
@@ -385,10 +419,9 @@ export default function ImportStatement() {
         {sections.map((section, sIdx) => {
           const changes = section.rows.filter(r => r.action !== 'none')
           return (
-            <div className="card" key={section.accountNumber}>
+            <div className="card" key={section.key}>
               <h2>
-                {section.accountLabel || 'Account'} {section.accountNumber}
-                {statementDate ? ` · ${statementDate}` : ''}
+                {section.sources.map(s => [s.label, s.number].filter(Boolean).join(' ')).join(' + ')}
               </h2>
               <div className="form-row" style={{ marginBottom: 10 }}>
                 <div>
@@ -401,10 +434,19 @@ export default function ImportStatement() {
                 <div>
                   <label className="field-label">Statement value</label>
                   <div className="signal-reasons" style={{ fontFamily: 'var(--mono)' }}>
-                    {fmtCad.format(section.statementTotal)}
+                    {Object.entries(section.totals).map(([cur, amt]) =>
+                      `${amt.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur}`
+                    ).join(' · ')}
                   </div>
                 </div>
               </div>
+              {section.sources.length > 1 && (
+                <div className="muted" style={{ marginBottom: 8 }}>
+                  These {section.sources.length} statement accounts both map to{' '}
+                  {section.accountType ? acctLabel(section.accountType) : 'one app account'}, so
+                  they're compared together — a fund held in both counts once, with the units added up.
+                </div>
+              )}
               {!section.accountType && (
                 <div className="notice">
                   Pick which account this is before importing — it decides which
@@ -522,7 +564,17 @@ export default function ImportStatement() {
                 will still import.
               </div>
             )}
-            <button className="btn" onClick={apply} disabled={applying || pending === 0 || noAccount}>
+            {clashingAccounts.length > 0 && (
+              <div className="notice">
+                Two sections above are both set to {clashingAccounts.join(' and ')}. Give them
+                different accounts — as it stands each would remove the other's funds.
+              </div>
+            )}
+            <button
+              className="btn"
+              onClick={apply}
+              disabled={applying || pending === 0 || noAccount || clashingAccounts.length > 0}
+            >
               {applying ? 'Applying…' : `Apply ${pending} change${pending === 1 ? '' : 's'}`}
             </button>
             <div className="muted" style={{ marginTop: 6 }}>

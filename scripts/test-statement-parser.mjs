@@ -166,6 +166,73 @@ console.log('\naccount types')
   check('and warns', unknown.warnings.some(w => /what kind of account/.test(w)), true)
 }
 
+console.log('\nFidelity-cleared format (Manulife Wealth)')
+{
+  // The newer statement differs in every structural way: "Account Holdings"
+  // instead of "Investment Funds and Deposit Notes", dashed account numbers,
+  // a "Held In" marker between the quantity and the money columns, a long
+  // quantity printed a point above the rest of its row, asset-class banners,
+  // and every account in one statement.
+  const page = [
+    item('For Accounts Belonging to MR SOMEONE', 62.3, 711.5),
+    item('For Period Ending June 30, 2026', 422.4, 711.5),
+    item('Account Holdings', 55.3, 683),
+    item('Held', 265.9, 666.5), item('Current', 379.2, 666.5), item('Current Market', 496.7, 666.5),
+    item('Quantity', 228.7, 656), item('In', 271.5, 656), item('Cost', 336.7, 656),
+    item('Price', 387.4, 656), item('Value', 529.9, 656),
+
+    item('RRSP Account (CAD) - YN5-60LA-T', 55.3, 626),
+    item('Mutual Funds', 55.3, 611),
+    // long quantity sits on its own baseline, one point above its row
+    item('3,144.7676', 223.8, 582.5),
+    item('BMO TACT GLB EQ ETF -NL', 62.3, 581.5), item('seg', 268.6, 581.5),
+    item('43,482.50', 317.3, 581.5), item('16.938', 381.2, 581.5), item('53,265.13', 515.3, 581.5),
+    // short quantity stays on the row
+    item('CI PREC MTL FD CL F -NL', 62.3, 567), item('95.6990', 230.3, 567), item('seg', 268.6, 567),
+    item('2,782.70', 321.6, 567), item('193.654', 376.8, 567), item('18,532.46', 515.3, 567),
+    // a worthless position still prices out
+    item('GOOD NATURED PRODS INC*', 62.3, 552.5), item('4', 254, 552.5), item('seg', 268.6, 552.5),
+    item('0.28', 336.7, 552.5), item('0.000', 385.5, 552.5), item('0.00', 534.7, 552.5),
+    item('Total Mutual Funds (CAD)', 55.3, 538), item('$', 303.1, 538), item('71,797.59', 308.7, 538),
+    item('$', 501.1, 538), item('71,797.59', 506.7, 538),
+    item('Account Total YN5-60LA-T (CAD)', 55.3, 524), item('$', 303.1, 524), item('71,797.59', 308.7, 524),
+
+    item('TFSA (CAD) - YN5-60LA-Q', 55.3, 500),
+    item('Cash and Cash Equivalents', 55.3, 486),
+    item('CASH', 62.3, 472), item('318.05', 234.6, 472), item('318.05', 328.1, 472), item('318.05', 526.1, 472),
+    item('Equity', 55.3, 458),
+    item('FIDELITY ALL IN ONE BAL ETF', 62.3, 444), item('3,752', 238.9, 444), item('seg', 268.6, 444),
+    item('54,494.32', 317.3, 444), item('15.560', 381.2, 444), item('58,381.12', 515.3, 444),
+    item('GRAND TOTAL (CAD)', 55.3, 420), item('$', 303.1, 420), item('130,178.71', 308.7, 420),
+
+    // the Income Summary that follows must not contribute positions
+    item('Income Summary', 55.3, 396),
+    item('TFSA (CAD)', 56.3, 380), item('YN5-60LA-Q', 178.7, 380),
+    item('Total Dividends', 257.9, 380), item('0.00', 438.4, 380), item('12.82', 534.9, 380),
+  ]
+
+  const r = parsePages([{ lines: linesFrom(page) }])
+  check('period-ending date is used', r.statementDate, '2026-06-30')
+  check('no warnings', r.warnings, [])
+  check('one section per account', r.accounts.map(a => a.accountNumber), ['YN5-60LA-T', 'YN5-60LA-Q'])
+  check('account types from the banners', r.accounts.map(a => a.accountType), ['RRSP', 'TFSA'])
+  check('currency', r.accounts.map(a => a.currency), ['CAD', 'CAD'])
+
+  const rrsp = r.accounts[0]
+  check('positions per account', r.accounts.map(a => a.positions.length), [3, 1])
+  check('quantity from the line above joins its row', rrsp.positions[0],
+    { name: 'BMO TACT GLB EQ ETF -NL', quantity: 3144.7676, unitPrice: 16.938, marketValue: 53265.13 })
+  check('"seg" does not break the figures', rrsp.positions[1],
+    { name: 'CI PREC MTL FD CL F -NL', quantity: 95.699, unitPrice: 193.654, marketValue: 18532.46 })
+  check('a zero-value position is kept', rrsp.positions[2],
+    { name: 'GOOD NATURED PRODS INC*', quantity: 4, unitPrice: 0, marketValue: 0 })
+  check('cash is not a holding', r.accounts[1].positions.map(p => p.name), ['FIDELITY ALL IN ONE BAL ETF'])
+  check('subtotals are not positions',
+    r.accounts.flatMap(a => a.positions).some(p => /total/i.test(p.name)), false)
+  check('income summary rows are not positions',
+    r.accounts.flatMap(a => a.positions).some(p => /dividend/i.test(p.name)), false)
+}
+
 console.log('\ncolumn layouts')
 {
   // Figures are read as (first, second-last, last) and checked against

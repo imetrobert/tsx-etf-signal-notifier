@@ -17,7 +17,10 @@
 // pdf.js hands back text in fragments ("INVES" + "CO", "8" + ".6641"), so
 // lines are rebuilt by y-coordinate and fragments joined by horizontal gap.
 
-const Y_TOL = 1.2 // items whose baselines are within this many points share a line
+// Baselines within this many points are one row. The Fidelity-cleared format
+// prints a long quantity a point above the rest of its row, so this has to be
+// forgiving — but below the ~2.5pt that separates genuinely different rows.
+const Y_TOL = 2
 const SPACE_GAP = 1 // a horizontal gap this wide means a space was rendered
 
 // Figures are read by position within the row rather than by fixed x
@@ -33,8 +36,12 @@ const COL_GAP = 6 // cells further apart than this are separate columns, not one
 const WRAP_MAX_GAP = 16
 const WRAP_MAX_LEN = 60
 
-const HOLDINGS_START = /^Investment Funds and Deposit Notes/i
-const HOLDINGS_END = /^(Total Investment Funds|Cash and Cash Equivalents|Total in Your Account)/i
+// Two statement formats are in circulation: the older Manulife Securities one
+// ("Investment Funds and Deposit Notes", one account per statement) and the
+// Fidelity-cleared Manulife Wealth one ("Account Holdings", every account in a
+// single statement). Both are recognized.
+const HOLDINGS_START = /^(Investment Funds and Deposit Notes|Account Holdings)\b/i
+const HOLDINGS_END = /^(Total Investment Funds|Total in Your Account|GRAND TOTAL|TOTAL ACCOUNTS)\b/i
 // The holdings table's own column header, used to reopen the table where it
 // continues onto another page. It must name a per-unit or book-cost column: the
 // Activity table of transactions also has a "Quantity" column, and its rows
@@ -42,28 +49,57 @@ const HOLDINGS_END = /^(Total Investment Funds|Cash and Cash Equivalents|Total i
 const COLUMN_HEADER = /Quantity/i
 const HOLDINGS_COLUMN = /(Per Unit|Book Cost|Market Value)/i
 // Sections that follow the table; reaching one means the table is over.
-const SECTION_BREAK = /^(Activity|Summary of Income|Important Information|Your Account Performance)/i
+const SECTION_BREAK = /^(Activity|Account Activity|Summary of Income|Income Summary|Important Information|Your Account Performance|Portfolio Summary|Asset Allocation|Transaction)\b/i
+// Asset-class banners inside the table. They carry no figures, so without this
+// they would look like a fund name wrapping from the row above.
+const ASSET_CLASS = /^(Cash and Cash Equivalents|Cash|Mutual Funds|Equity|Equities|Fixed Income|Bonds|Options|Other|Other Assets|Exchange Traded Funds|Guaranteed Investment Certificates|Segregated Funds|Held In|Quantity)\b/i
+// Cash is reported as a position but isn't a holding this app can track.
+const CASH_ROW = /^(CASH|CASH BALANCE|CAD CASH|USD CASH)$/i
 
-// Manulife account labels → the account types this app tracks.
+// Account labels → the account types this app tracks. Locked-in plans are
+// checked before RRSP because "Locked-in RRSP" contains both.
 const ACCOUNT_TYPES = [
   [/\bTFSA\b/i, 'TFSA'],
-  [/\b(LIRA|LRSP|LIF|LRIF)\b/i, 'LIRA'],
+  [/(\bLIRA\b|\bLRSP\b|\bLIF\b|\bLRIF\b|LOCKED-?IN)/i, 'LIRA'],
   [/\b(RRSP|RSP|RRIF|SPOUSAL)\b/i, 'RRSP'],
   [/\b(CASH|MARGIN|OPEN|NON-?REG|INVESTMENT ACCOUNT)\b/i, 'NON_REG'],
 ]
 
-// Account numbers mix letters and digits and can end in a letter (N359858R),
-// so they can't be matched with a plain \d+ tail.
-const ACCOUNT_NUMBER = '[A-Z]{1,2}\\d{4,9}[A-Z]?'
+// Account numbers take two shapes: YN5-60LA-T on the Fidelity-cleared format,
+// N359858R on the older one — the latter ending in a letter, so neither can be
+// matched with a plain \d+ tail.
+const ACCOUNT_NUMBER = '(?:[A-Z0-9]{2,5}-[A-Z0-9]{2,6}-[A-Z0-9]{1,3}|[A-Z]{1,2}\\d{4,9}[A-Z]?)'
+// "RRSP Account (CAD) - YN5-60LA-T" — the section banner that introduces each
+// account's holdings, and the only thing allowed to switch account mid-table.
+const ACCOUNT_SECTION = new RegExp(`^(.{1,48}?)\\s*\\((CAD|USD)\\)\\s*[-–—]\\s*(${ACCOUNT_NUMBER})$`, 'i')
 const LABELLED_ACCOUNT = new RegExp(
   `\\b(TFSA|RRSP|RSP|RRIF|LIRA|LRSP|LIF|LRIF|CASH|MARGIN|OPEN|SPOUSAL|NON-?REG)\\b\\W{0,3}(${ACCOUNT_NUMBER})\\b`, 'i')
 const BARE_ACCOUNT = new RegExp(`\\b(${ACCOUNT_NUMBER})\\b`)
 const HEADER_LINES = 14 // the account/date header sits at the top of every page
 
+// "Held In" column values ("seg" for segregated) sit between the quantity and
+// the money columns, and must not break the run of figures.
+const HELD_IN = /^(seg|unseg|segregated|safe|sk|s|c|k)$/i
+
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
   'August', 'September', 'October', 'November', 'December']
 // Tolerates missing spaces: tight kerning can leave "September30, 2023".
 const DATE_RE = new RegExp(`^(${MONTHS.join('|')})\\s*(\\d{1,2}),\\s*(\\d{4})$`, 'i')
+// "For Period Ending June 30, 2026" — states the period outright, so it beats a
+// bare date that could belong to the previous statement's line.
+const PERIOD_DATE = new RegExp(`Period Ending\\W{0,4}(${MONTHS.join('|')})\\s*(\\d{1,2}),\\s*(\\d{4})`, 'i')
+
+function toIsoDate(monthName, day, year) {
+  const month = MONTHS.findIndex(m => m.toLowerCase() === String(monthName).toLowerCase()) + 1
+  if (!month) return null
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+// "RRSP Account (CAD) - YN5-60LA-T" → { label, currency, number }
+function matchAccountSection(text) {
+  const m = String(text).match(ACCOUNT_SECTION)
+  return m ? { label: m[1].trim(), currency: m[2].toUpperCase(), number: m[3] } : null
+}
 
 // Words that stay upper-case when a SHOUTED fund name is turned into a nickname.
 const ACRONYMS = new Set(['ETF', 'ETFS', 'CI', 'BMO', 'RBC', 'TD', 'BNS', 'CIBC', 'IA', 'AGF',
@@ -124,9 +160,15 @@ export function rowValues(line) {
   let i = cells.length
   const figures = []
   let token = null
-  while (i > 0 && NUMERIC_PART.test(cells[i - 1].str)) {
+  while (i > 0 && (NUMERIC_PART.test(cells[i - 1].str) || HELD_IN.test(cells[i - 1].str))) {
     i--
     const cell = cells[i]
+    if (HELD_IN.test(cell.str)) {
+      // A "Held In" marker separates columns without being one.
+      if (token) figures.unshift(token)
+      token = null
+      continue
+    }
     if (token && token.x - cell.end <= COL_GAP) {
       token = { x: cell.x, end: token.end, str: cell.str + token.str } // same number
     } else {
@@ -156,7 +198,8 @@ function figuresToPosition(values) {
   for (let drop = 1; drop <= values.length - 3; drop++) candidates.push(shape(values.slice(drop)))
 
   for (const c of candidates) {
-    if (!(c.quantity > 0) || !(c.unitPrice > 0) || c.marketValue == null) continue
+    // A worthless position prices at zero, so only the quantity must be real.
+    if (!(c.quantity > 0) || !(c.unitPrice >= 0) || c.marketValue == null) continue
     const implied = c.quantity * c.unitPrice
     if (Math.abs(implied - c.marketValue) <= Math.max(0.01 * Math.abs(c.marketValue), 0.02)) return c
   }
@@ -204,8 +247,32 @@ export function prettifyFundName(name) {
 export function parsePages(pages) {
   const warnings = []
   const accounts = new Map()
-  let statementDate = null
+  let periodDate = null
+  let bareDate = null
   let currentAccount = null
+
+  // Registers an account the first time it is seen and returns its number.
+  function openAccount({ label, number, currency }) {
+    const clean = String(label || '').replace(/[^A-Za-z0-9 &-]/g, ' ').trim()
+    const type = ACCOUNT_TYPES.find(([re]) => re.test(clean))?.[1] || null
+    const existing = accounts.get(number)
+    if (!existing) {
+      accounts.set(number, {
+        accountNumber: number,
+        accountLabel: clean,
+        accountType: type,
+        currency: currency || 'CAD',
+        positions: [],
+      })
+    } else if (type && !existing.accountType) {
+      // A number spotted in a summary table carries no label; the section
+      // banner that introduces the account's holdings does.
+      existing.accountLabel = clean
+      existing.accountType = type
+      if (currency) existing.currency = currency
+    }
+    return number
+  }
   // Recorded per page so a statement that doesn't parse can say why — a scanned
   // PDF has no text items at all, an unrecognized layout has text but no table.
   const diagnostics = { pageCount: pages.length, pages: [] }
@@ -214,31 +281,34 @@ export function parsePages(pages) {
     const lines = page.lines
     // Account + date live in the page header; the first page spells the account
     // out beside the owner's name, later pages repeat it in the top right.
+    let headerAccount = false
     for (const line of lines.slice(0, HEADER_LINES)) {
       const text = joinCells(line.cells)
+      // The header sits above the table. Once the table starts, its own rows
+      // are authoritative about which account they belong to — on the newer
+      // format a page holds several accounts, and reading further here would
+      // attribute a page's positions to whichever account is named last.
+      if (HOLDINGS_START.test(text) || COLUMN_HEADER.test(text)) break
+
+      const section = matchAccountSection(text)
       const labelled = text.match(LABELLED_ACCOUNT)
-      const acct = labelled || text.match(BARE_ACCOUNT)
-      if (acct) {
-        const label = labelled ? labelled[1].toUpperCase() : ''
-        const number = labelled ? labelled[2] : acct[1]
-        const type = ACCOUNT_TYPES.find(([re]) => re.test(label))?.[1] || null
-        currentAccount = number
-        if (!accounts.has(currentAccount)) {
-          accounts.set(currentAccount, {
-            accountNumber: number,
-            accountLabel: label,
-            accountType: type,
-            positions: [],
-          })
-          if (!type) warnings.push(`Couldn't tell what kind of account ${[label, number].filter(Boolean).join(' ')} is — pick one below.`)
-        }
+      // A bare number is the weakest signal — a summary table lists every
+      // account — so it only counts when nothing is established yet.
+      const bare = !section && !labelled && !currentAccount ? text.match(BARE_ACCOUNT) : null
+      if (!headerAccount && (section || labelled || bare)) {
+        currentAccount = openAccount(
+          section ? section : labelled
+            ? { label: labelled[1], number: labelled[2], currency: null }
+            : { label: '', number: bare[1], currency: null })
+        headerAccount = true
       }
-      if (!statementDate) {
+      // The period covered is stated outright on the newer format's every page;
+      // a bare date is only a fallback, and never one labelled "Previous".
+      const period = text.match(PERIOD_DATE)
+      if (period) periodDate = periodDate || toIsoDate(period[1], period[2], period[3])
+      if (!bareDate && !/previous/i.test(text)) {
         const d = text.match(DATE_RE)
-        if (d) {
-          const month = MONTHS.findIndex(m => m.toLowerCase() === d[1].toLowerCase()) + 1
-          statementDate = `${d[3]}-${String(month).padStart(2, '0')}-${String(d[2]).padStart(2, '0')}`
-        }
+        if (d) bareDate = toIsoDate(d[1], d[2], d[3])
       }
     }
 
@@ -278,6 +348,23 @@ export function parsePages(pages) {
         continue
       }
       if (!inHoldings) continue
+
+      // "RRSP Account (CAD) - YN5-60LA-T": every account's holdings follow such
+      // a banner on the newer format, so this is what switches account.
+      const section = !values.length && matchAccountSection(text)
+      if (section) {
+        currentAccount = openAccount(section)
+        seen.accountSection = true
+        seen.account = true
+        last = null
+        continue
+      }
+      // Asset-class banners, "Total …" subtotals and the cash line are inside
+      // the table but are not positions.
+      if (ASSET_CLASS.test(text) || /^Total\b/i.test(text) || CASH_ROW.test(text)) {
+        last = null
+        continue
+      }
       if (values.length) seen.figureRows++
 
       // A position: a named row ending in the table's figures.
@@ -308,6 +395,11 @@ export function parsePages(pages) {
   const list = [...accounts.values()].filter(a => a.positions.length)
   for (const acct of list) {
     for (const p of acct.positions) p.name = p.name.replace(/\s+/g, ' ').trim()
+    // Only worth mentioning for accounts that actually hold something: a
+    // summary table names every account, including ones with no positions.
+    if (!acct.accountType) {
+      warnings.push(`Couldn't tell what kind of account ${[acct.accountLabel, acct.accountNumber].filter(Boolean).join(' ')} is — pick one below.`)
+    }
   }
   diagnostics.textItems = diagnostics.pages.reduce((n, p) => n + p.textItems, 0)
   diagnostics.figureRows = diagnostics.pages.reduce((n, p) => n + p.figureRows, 0)
@@ -323,6 +415,7 @@ export function parsePages(pages) {
       warnings.push("Found the holdings table but couldn't read any positions from it — the columns may have moved. The details below will pin down what's different.")
     }
   }
+  const statementDate = periodDate || bareDate
   if (!statementDate) warnings.push('No statement date found on the PDF.')
   return { statementDate, accounts: list, warnings: [...new Set(warnings)], diagnostics }
 }
