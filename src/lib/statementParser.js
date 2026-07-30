@@ -101,10 +101,30 @@ function matchAccountSection(text) {
   return m ? { label: m[1].trim(), currency: m[2].toUpperCase(), number: m[3] } : null
 }
 
+// Statements print fund names heavily abbreviated ("FDLTY INSIG CL SR F"),
+// which makes a poor nickname and an even worse search query. Expanding them
+// gives a name a human — and a ticker search — can recognize. Fund-company
+// prefixes are FundSERV codes: GOC is Canoe, CCM is iA Clarington.
+const ABBREVIATIONS = {
+  FDLTY: 'Fidelity', MMF: 'Manulife', MLF: 'Manulife', CIG: 'CI', RBF: 'RBC',
+  TDB: 'TD', BNS: 'Scotia', DYN: 'Dynamic', GOC: 'Canoe', CCM: 'iA Clarington',
+  GLB: 'Global', EQ: 'Equity', EQUITIES: 'Equity', INTL: 'International',
+  CDN: 'Canadian', AMER: 'American', EMRG: 'Emerging', MKT: 'Market', MKTS: 'Markets',
+  BAL: 'Balanced', DIV: 'Dividend', DIVDND: 'Dividend', INC: 'Income',
+  GRT: 'Growth', GRWTH: 'Growth', MO: 'Monthly', HI: 'High', PREM: 'Premium',
+  PREC: 'Precious', MTL: 'Metals', TACT: 'Tactical', TRGT: 'Target',
+  DISP: 'Disciplined', ALLOC: 'Allocation', AA: 'Asset Allocation',
+  PRT: 'Portfolio', PORT: 'Portfolio', PP: 'Private Pool', PVT: 'Private',
+  CL: 'Class', CLS: 'Class', CC: 'Corporate Class', SR: 'Series', SRS: 'Series',
+  ADV: 'Advisor', FD: 'Fund', UN: 'Units', SAV: 'Savings', ACT: 'Account',
+  INV: 'Investment', MN: 'Market Neutral', WE: 'World Equity', INSIG: 'Insights',
+}
+
 // Words that stay upper-case when a SHOUTED fund name is turned into a nickname.
 const ACRONYMS = new Set(['ETF', 'ETFS', 'CI', 'BMO', 'RBC', 'TD', 'BNS', 'CIBC', 'IA', 'AGF',
   'US', 'USA', 'UK', 'EU', 'EAFE', 'REIT', 'GIC', 'NASDAQ', 'S&P', 'TSX', 'MSCI', 'EQV',
-  'FE', 'DSC', 'LL', 'II', 'III', 'IV'])
+  // Load types printed after the fund name: front-end, no-load, deferred.
+  'FE', 'NL', 'DSC', 'LL', 'II', 'III', 'IV'])
 
 // ---------- line reconstruction ----------
 
@@ -231,11 +251,25 @@ export function prettifyFundName(name) {
     .split(' ')
     .map(word => {
       const bare = word.replace(/[^A-Z0-9&]/gi, '').toUpperCase()
+      if (ABBREVIATIONS[bare]) return word.replace(/[A-Za-z]+/, ABBREVIATIONS[bare])
       if (ACRONYMS.has(bare)) return word.toUpperCase()
       if (/^\d/.test(word)) return word // years, target dates
       return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
     })
     .join(' ')
+    // Expansion can double a word up: "MMF MLF" are both Manulife, and
+    // "CC CL" expands to "Corporate Class Class".
+    .replace(/\b(\w+)(\s+\1)+\b/gi, '$1')
+}
+
+// The name to search a ticker database with: expanded, and stripped of the
+// load-type suffix ("-NL", "-FE") and series markers, which no database indexes.
+export function searchableFundName(name) {
+  return prettifyFundName(name)
+    .replace(/\s*[-–]\s*(NL|FE|DSC|LL)\b/gi, '')
+    .replace(/\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // ---------- statement parsing ----------

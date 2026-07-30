@@ -86,9 +86,15 @@ and unchanged funds for completeness. Each row has a checkbox, so a partial
 import is fine.
 
 Manulife statements print fund names but no tickers, so the first import of
-a fund asks for one — with a Yahoo lookup link and the **nickname
-pre-filled** from the statement ("MANULIFE GLOBAL BALANCED FUND -FE" →
-"Manulife Global Balanced Fund -FE"), editable before saving. Each ticker
+a fund asks for one. A **Find ticker** button searches Yahoo by fund name —
+proxied through the `refresh-prices` edge function, since Yahoo's search has
+no CORS headers — and offers the matches as one-click buttons, preferring
+Canadian listings. A fund matched to a Yahoo id (`0P…`) gets NAV history and
+so generates signals; a FundSERV code (`FID5494`) only gets a current price
+through the Globe and Mail fallback. Statement abbreviations are expanded
+before searching and for the **pre-filled nickname** ("FDLTY INSIG CL SR F"
+→ "Fidelity Insights Class Series F"), editable before saving.
+`docs/manulife-fund-codes.md` records the codes already identified. Each ticker
 you enter is remembered in `etf_fund_map`, so the same fund is recognized
 automatically next month. Applied imports are logged to
 `etf_statement_imports`, which is what lets the tab warn you that a

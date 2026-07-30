@@ -90,6 +90,41 @@ function resolveKey(singulars: string[], plural: string): string | undefined {
   return undefined
 }
 
+// Searches Yahoo by fund name. Canadian mutual funds come back as Morningstar
+// "0P…" ids, which carry NAV history — so a fund matched this way generates
+// signals, unlike one tracked by FundSERV code through the Globe and Mail.
+// Canadian listings are ranked first, and .TO is appended to bare fund ids so
+// the result is enterable as-is.
+async function searchTickers(query: string) {
+  const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0`
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (etf-signal-notifier)' } })
+  if (!res.ok) return { error: `Yahoo search ${res.status}`, results: [] }
+  const body = await res.json()
+  const quotes: Record<string, unknown>[] = body?.quotes ?? []
+
+  const results = quotes
+    .filter(q => typeof q.symbol === 'string')
+    .map(q => {
+      const symbol = q.symbol as string
+      const exchange = (q.exchange as string) ?? ''
+      // Fund ids are exchange-less; the app's Yahoo calls need the .TO suffix.
+      const enterable = /^0P|^F0000/.test(symbol) && !symbol.includes('.')
+        ? `${symbol}.TO`
+        : symbol
+      return {
+        symbol: enterable,
+        name: (q.longname as string) ?? (q.shortname as string) ?? '',
+        type: (q.quoteType as string) ?? '',
+        exchange,
+      }
+    })
+
+  const canadian = (r: { symbol: string; exchange: string }) =>
+    /\.(TO|NE|V|CN)$/i.test(r.symbol) || ['TOR', 'NEO', 'VAN', 'CNQ'].includes(r.exchange)
+  results.sort((a, b) => Number(canadian(b)) - Number(canadian(a)))
+  return { results: results.slice(0, 8) }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
@@ -107,6 +142,21 @@ Deno.serve(async (req) => {
   })
   const { data: { user } } = await authClient.auth.getUser()
   if (!user) return json({ error: 'Not signed in' }, 401)
+
+  // Ticker lookup for the Import tab. Statements print fund names but no
+  // tickers, and Yahoo's search endpoint can't be called from the browser
+  // (no CORS), so the lookup is proxied here.
+  let body: { action?: string; query?: string } = {}
+  try {
+    body = await req.json()
+  } catch {
+    // no body — a plain refresh
+  }
+  if (body.action === 'search') {
+    const query = (body.query ?? '').trim()
+    if (!query) return json({ error: 'Missing query' }, 400)
+    return json(await searchTickers(query))
+  }
 
   const db = createClient(url, secretKey)
   const [h, w] = await Promise.all([

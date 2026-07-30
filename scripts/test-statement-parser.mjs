@@ -10,7 +10,7 @@
 
 import {
   linesFrom, joinCells, parsePages, diffPositions,
-  normalizeFundName, prettifyFundName,
+  normalizeFundName, prettifyFundName, searchableFundName,
 } from '../src/lib/statementParser.js'
 
 let failures = 0
@@ -313,11 +313,24 @@ console.log('\nnicknames')
   check('title-cased with acronyms kept', prettifyFundName('MANULIFE GLOBAL BALANCED FUND -FE'),
     'Manulife Global Balanced Fund -FE')
   check('brand acronyms', prettifyFundName('BMO GLOBAL LOW VOLATILITY ETF FUND ADV SRS -FE'),
-    'BMO Global Low Volatility ETF Fund Adv Srs -FE')
+    'BMO Global Low Volatility ETF Fund Advisor Series -FE')
   check('kerning fix', prettifyFundName('BMO TACTICAL GLOBAL ASSET ALLOCATION ETFFUND ADV SRS -FE'),
-    'BMO Tactical Global Asset Allocation ETF Fund Adv Srs -FE')
+    'BMO Tactical Global Asset Allocation ETF Fund Advisor Series -FE')
   check('target dates kept', prettifyFundName('IA CLARINGTON TARGET CLICK 2030 -FE'),
     'IA Clarington Target Click 2030 -FE')
+  // The Fidelity-cleared statement abbreviates severely. Expanding gives a
+  // readable nickname and, more importantly, a name a ticker search can match.
+  check('expands abbreviations', prettifyFundName('FDLTY INSIG CL SR F -NL'),
+    'Fidelity Insights Class Series F -NL')
+  check('fund-company prefixes are FundSERV codes', prettifyFundName('GOC AA PRT CLS SR F -NL'),
+    'Canoe Asset Allocation Portfolio Class Series F -NL')
+  check('doubled expansions collapse', prettifyFundName('MMF MLF DIV INC CL -NL'),
+    'Manulife Dividend Income Class -NL')
+  check('search name drops the load type', searchableFundName('FDLTY GLB INC CL PORT SR F -NL'),
+    'Fidelity Global Income Class Portfolio Series F')
+  check('search name drops footnote marks', searchableFundName('GOOD NATURED PRODS INC*'),
+    'Good Natured Prods Income')
+
   check('normalizing ignores case and punctuation',
     normalizeFundName('CI Growth & Income  Personal-Portfolio Class A -FE'),
     'CI GROWTH & INCOME PERSONAL PORTFOLIO CLASS A FE')
