@@ -124,6 +124,27 @@ drop policy if exists "etf_fund_map_auth" on etf_fund_map;
 create policy "etf_fund_map_auth" on etf_fund_map
   for all to authenticated using (true) with check (true);
 
+-- Fund codes already identified for the Manulife Wealth statement, so the
+-- import recognizes them without asking. Statements print no tickers, and a
+-- FundSERV code prices through the Globe and Mail fallback (current price
+-- only); an exchange ticker or Yahoo 0P id also carries history, so it
+-- generates signals. See docs/manulife-fund-codes.md for how each was
+-- identified. Funds whose series or variant is ambiguous are deliberately
+-- absent — better to be asked than to silently track the wrong one.
+insert into etf_fund_map (norm_name, statement_name, ticker, fund_name) values
+  ('CIG GLB EQ CC CL F NL', 'CIG GLB EQ CC CL F -NL', 'CIG4323', 'CI Global Equity Corporate Class F'),
+  ('FDLTY GLB INC CL PORT SR F NL', 'FDLTY GLB INC CL PORT SR F -NL', 'FID2682', 'Fidelity Global Income Class Portfolio Series F'),
+  ('GOC AA PRT CLS SR F NL', 'GOC AA PRT CLS SR F -NL', 'GOC303', 'Canoe Asset Allocation Portfolio Class Series F'),
+  ('FIDELITY ALL IN ONE BAL ETF', 'FIDELITY ALL IN ONE BAL ETF', 'FBAL.NE', 'Fidelity All-in-One Balanced ETF'),
+  ('VANGUARD GLOBAL VALUE ETF UN', 'VANGUARD GLOBAL VALUE ETF UN', 'VVL.TO', 'Vanguard Global Value Factor ETF'),
+  ('BMO TACT GLB EQ ETF NL', 'BMO TACT GLB EQ ETF -NL', 'BMO68217', 'BMO Tactical Global Equity ETF Fund Series F'),
+  ('CI PREC MTL FD CL F NL', 'CI PREC MTL FD CL F -NL', 'CIG54203', 'CI Precious Metals Fund Series F'),
+  ('DYNAMIC PREM BAL PP CL F NL', 'DYNAMIC PREM BAL PP CL F -NL', 'DYN3915', 'Dynamic Premium Balanced Private Pool Class F'),
+  ('FDLTY GLOBAL EQUITY SR F NL', 'FDLTY GLOBAL EQUITY+ SR F -NL', 'FID7648', 'Fidelity Global Equity+ Fund Series F'),
+  ('FDLTY INSIG CL SR F NL', 'FDLTY INSIG CL SR F -NL', 'FID5494', 'Fidelity Insights Class Series F'),
+  ('TDB US DISP E ALPHA SR F NL', 'TDB US DISP E ALPHA SR F -NL', 'TDB3173', 'TD U.S. Disciplined Equity Alpha Fund Series F')
+on conflict (norm_name) do nothing;
+
 -- Audit trail of applied statement imports, so a statement that has already
 -- been applied can be flagged instead of silently double-counted.
 create table if not exists etf_statement_imports (
