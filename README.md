@@ -67,7 +67,17 @@ identifiable from a phone's lock screen. The name is stored on each signal
 (`etf_signals.asset_name`), so re-run `supabase/schema.sql` after
 deploying this change.
 
-**Monthly statement import**: the **Import** tab takes the PDF statement
+**Account export import** (the easy path): the account site's Holdings page
+has an **Export**, and it is the best source of the three — it carries the
+ticker *and* the account for every position, and is current rather than
+month-end, so it needs no ticker lookups at all. Paste it into the Import
+tab or attach the file. Broker symbols are translated to the ones Yahoo
+indexes (`VVL` → `VVL.TO`, `DGR.B` → `DGR-B.TO`, `FBAL` on Cboe →
+`FBAL.NE`); FundSERV codes for the OTC funds are left as they are, since
+the Globe and Mail fallback expects the bare code. Cash rows and RESP
+accounts are skipped, and the same approve-before-writing diff applies.
+
+**Monthly statement import**: the **Import** tab also takes the PDF statement
 Manulife Wealth sends each month and syncs the holdings table to it. Both
 statement formats are handled — the older Manulife Securities one (one
 account per statement, "Investment Funds and Deposit Notes") and the
@@ -145,7 +155,8 @@ reloading the last stored data and says so.
     ├── lib/
     │   ├── supabase.js              # client (graceful when secrets missing)
     │   ├── tickers.js               # XEQT → XEQT.TO normalization, CAD formatting
-    │   └── statementParser.js       # Manulife statement PDF → positions + diff
+    │   ├── statementParser.js       # Manulife statement PDF → positions + diff
+    │   └── holdingsExport.js        # account-site export (TSV/CSV) → positions
     └── components/
         ├── Login.jsx                # shared-credential sign-in
         ├── Navbar.jsx               # header + Holdings/Watchlist/Signals/Import tabs

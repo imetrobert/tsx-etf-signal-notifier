@@ -12,6 +12,7 @@ import {
   linesFrom, joinCells, parsePages, diffPositions,
   normalizeFundName, prettifyFundName, searchableFundName,
 } from '../src/lib/statementParser.js'
+import { parseHoldingsExport, toYahooSymbol } from '../src/lib/holdingsExport.js'
 
 let failures = 0
 function check(name, actual, expected) {
@@ -274,6 +275,62 @@ console.log('\ncolumn layouts')
   )), { name: 'A FUND -FE', quantity: 524.7593, unitPrice: 9.6371, marketValue: 5057.16 })
 }
 
+console.log('\naccount holdings export')
+{
+  const tsv = [
+    'Security\tSecurity Symbol\tMarket\tAsset Class\tAccount Number\tAccount Type\tAccount Name\tQuantity\tPrice (Security Currency)\tSecurity Currency\tAccount Currency\tTotal Value (Account Currency)',
+    'FIDELITY ALL IN ONE BAL ETF\tFBAL\tTSX\tOTHER\tYN560LAQ\tTAX FREE SAVINGS ACCOUNT\tA PERSON\t3,752.00\t$15.45\tCAD\tCAD\t$57,968.40',
+    'FIDELITY ALL IN ONE BAL ETF\tFBAL\tTSX\tOTHER\tYN560LAR\tLOCKED IN RRSP\tA PERSON\t3,540.00\t$15.45\tCAD\tCAD\t$54,693.00',
+    'CI U.S. QUALITY DIVDND GRT ETF\tDGR.B\tTSX\tEQUITY\tYN560LAT\tRRSP\tA PERSON\t1,035.00\t$63.36\tCAD\tCAD\t$65,577.60',
+    'FDLTY INSIG CL SR F -NL\tFID5494\tOTC\tEQUITY\tYN560LAT\tRRSP\tA PERSON\t1,113.74\t$43.11\tCAD\tCAD\t$48,018.46',
+    'GOC AA PRT CLS SR F -NL\tGOC303\tOTC\tOTHER\tYN560LAA\tCASH\tA PERSON\t2,665.00\t$24.21\tCAD\tCAD\t$64,508.38',
+    'MACKENZ SYM MOD GWTH PORT -FE\tMFC6150\tOTC\tOTHER\tYC53QCUZ\tFAMILY RESP\tTWO PEOPLE\t5,478.74\t$14.85\tCAD\tCAD\t$81,370.26',
+    'GOOD NATURED PRODS INC*\t\tTSXV\tEQUITY\tYN560LAT\tRRSP\tA PERSON\t4.00\t$0.00\tCAD\tCAD\t$0.00',
+    'CASH\t\t\tCASH AND CASH EQUIVALENTS\tYN560LAT\tRRSP\tA PERSON\t24.55\t$1.00\tCAD\tCAD\t$24.55',
+    'CASH\t\t\tCASH AND CASH EQUIVALENTS\tYN560LAB\tCASH\tA PERSON\t0.00\t$1.00\tUSD\tUSD\t$0.00',
+  ].join('\n')
+
+  const r = parseHoldingsExport(tsv)
+  const byNumber = n => r.accounts.find(a => a.accountNumber === n)
+
+  check('accounts, in the order they appear', r.accounts.map(a => a.accountNumber),
+    ['YN560LAQ', 'YN560LAR', 'YN560LAT', 'YN560LAA'])
+  check('account types', r.accounts.map(a => a.accountType), ['TFSA', 'LIRA', 'RRSP', 'NON_REG'])
+  check('a fund held twice stays split by account',
+    [byNumber('YN560LAQ').positions[0].quantity, byNumber('YN560LAR').positions[0].quantity],
+    [3752, 3540])
+  check('prices and values parse through $ and commas',
+    byNumber('YN560LAQ').positions[0], {
+      name: 'FIDELITY ALL IN ONE BAL ETF', quantity: 3752, unitPrice: 15.45,
+      marketValue: 57968.4, ticker: 'FBAL.TO',
+    })
+  check('cash rows are skipped', r.accounts.every(a => a.positions.every(p => p.name !== 'CASH')), true)
+  check('RESP is skipped', r.accounts.some(a => a.accountNumber === 'YC53QCUZ'), false)
+  check('and both skips are explained', r.warnings.length, 2)
+  check('a position with no symbol still imports, without a ticker',
+    byNumber('YN560LAT').positions.find(p => /GOOD NATURED/.test(p.name)).ticker, '')
+
+  // Broker symbols are not Yahoo symbols.
+  check('TSX gets .TO', toYahooSymbol('VVL', 'TSX'), 'VVL.TO')
+  check('class shares use a dash', toYahooSymbol('DGR.B', 'TSX'), 'DGR-B.TO')
+  check('TSX Venture gets .V', toYahooSymbol('GDNP', 'TSXV'), 'GDNP.V')
+  check('Cboe Canada gets .NE', toYahooSymbol('FBAL', 'NEO'), 'FBAL.NE')
+  check('a FundSERV code is left alone', toYahooSymbol('FID5494', 'OTC'), 'FID5494')
+  check('an exchange already present is kept', toYahooSymbol('VVL.TO', 'TSX'), 'VVL.TO')
+  check('no symbol stays empty', toYahooSymbol('', 'TSX'), '')
+
+  // Commas instead of tabs, with quoted fields.
+  const csv = [
+    'Security,Security Symbol,Market,Account Number,Account Type,Quantity,Price (Security Currency),Security Currency',
+    '"VANGUARD GLOBAL VALUE ETF UN",VVL,TSX,YN560LAT,RRSP,"878.00","$74.36",CAD',
+  ].join('\n')
+  check('comma-separated exports read too', parseHoldingsExport(csv).accounts[0].positions[0],
+    { name: 'VANGUARD GLOBAL VALUE ETF UN', quantity: 878, unitPrice: 74.36, marketValue: 65288.08, ticker: 'VVL.TO' })
+
+  check('a file that is not an export says so',
+    /doesn't look like a holdings export/.test(parseHoldingsExport('a,b,c\n1,2,3').warnings[0]), true)
+}
+
 console.log('\ndiff against stored holdings')
 {
   const positions = [
@@ -329,7 +386,9 @@ console.log('\nnicknames')
   check('search name drops the load type', searchableFundName('FDLTY GLB INC CL PORT SR F -NL'),
     'Fidelity Global Income Class Portfolio Series F')
   check('search name drops footnote marks', searchableFundName('GOOD NATURED PRODS INC*'),
-    'Good Natured Prods Income')
+    'Good Natured Prods Inc')
+  check('"Inc" ending a company name is not "Income"', prettifyFundName('GOOD NATURED PRODS INC'),
+    'Good Natured Prods Inc')
 
   check('normalizing ignores case and punctuation',
     normalizeFundName('CI Growth & Income  Personal-Portfolio Class A -FE'),
