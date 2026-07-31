@@ -249,8 +249,11 @@ export function prettifyFundName(name) {
     .replace(/\s+/g, ' ')
     .trim()
     .split(' ')
-    .map(word => {
+    .map((word, i, all) => {
       const bare = word.replace(/[^A-Z0-9&]/gi, '').toUpperCase()
+      // "INC" ends a company name ("GOOD NATURED PRODS INC*") but means income
+      // inside a fund's name ("DIV INC CL").
+      if (bare === 'INC' && i === all.length - 1) return word.charAt(0) + word.slice(1).toLowerCase()
       if (ABBREVIATIONS[bare]) return word.replace(/[A-Za-z]+/, ABBREVIATIONS[bare])
       if (ACRONYMS.has(bare)) return word.toUpperCase()
       if (/^\d/.test(word)) return word // years, target dates
@@ -525,15 +528,19 @@ export function diffPositions(positions, holdings, fundMap = {}) {
   for (const p of positions) {
     const norm = normalizeFundName(p.name)
     const mapped = fundMap[norm] || null
-    const holding = (mapped && holdings.find(h => h.ticker === mapped.ticker)) || byNorm.get(norm) || null
-    const ticker = holding?.ticker || mapped?.ticker || ''
+    // The account export states the ticker outright, which beats a remembered
+    // mapping or a name match — it is the broker's own answer.
+    const holding = (p.ticker && holdings.find(h => h.ticker === p.ticker)) ||
+      (mapped && holdings.find(h => h.ticker === mapped.ticker)) || byNorm.get(norm) || null
+    const ticker = p.ticker || holding?.ticker || mapped?.ticker || ''
     if (holding) matched.add(holding.id)
 
     const sameUnits = holding != null && Math.abs(Number(holding.shares) - p.quantity) < 1e-4
     rows.push({
       key: norm,
       statementName: p.name,
-      nickname: holding?.fund_name || mapped?.fund_name || prettifyFundName(p.name),
+      // The load type ("-NL") is how the fund was bought, not part of its name.
+      nickname: holding?.fund_name || mapped?.fund_name || searchableFundName(p.name),
       ticker,
       quantity: p.quantity,
       unitPrice: p.unitPrice,

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { normalizeTicker, displayTicker, fmtCad } from '../lib/tickers'
 import { parseStatementPdf, diffPositions, normalizeFundName, searchableFundName } from '../lib/statementParser'
+import { parseHoldingsExport } from '../lib/holdingsExport'
 import Navbar from './Navbar'
 
 const ACCOUNTS = [
@@ -99,6 +100,8 @@ export default function ImportStatement() {
   const [diagnostics, setDiagnostics] = useState(null)
   const [copiedDiagnostics, setCopiedDiagnostics] = useState(false)
   const [lookups, setLookups] = useState({})
+  const [pasted, setPasted] = useState('')
+  const [source, setSource] = useState('statement')
   const [sections, setSections] = useState([])
   const [applying, setApplying] = useState(false)
   const [result, setResult] = useState(null)
@@ -123,29 +126,53 @@ export default function ImportStatement() {
 
   useEffect(() => { load() }, [load])
 
-  async function onFile(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
+  function show(parsed) {
+    setStatementDate(parsed.statementDate)
+    setWarnings(parsed.warnings)
+    setDiagnostics(parsed.diagnostics || null)
+    setSource(parsed.source || 'statement')
+    setSections(buildSections(parsed.accounts, holdings, fundMap))
+  }
+
+  function startRead(name, size) {
     setParsing(true)
     setError('')
     setResult(null)
     setSections([])
     setWarnings([])
     setDiagnostics(null)
-    setFileName(file.name)
-    setFileSize(file.size)
+    setFileName(name)
+    setFileSize(size)
+  }
+
+  async function onFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    startRead(file.name, file.size)
     try {
-      const parsed = await parseStatementPdf(await file.arrayBuffer())
-      setStatementDate(parsed.statementDate)
-      setWarnings(parsed.warnings)
-      setDiagnostics(parsed.diagnostics || null)
-      setSections(buildSections(parsed.accounts, holdings, fundMap))
+      // The account export is delimited text; a statement is a PDF.
+      if (/\.(csv|tsv|txt)$/i.test(file.name) || file.type.startsWith('text/')) {
+        show(parseHoldingsExport(await file.text()))
+      } else {
+        show(await parseStatementPdf(await file.arrayBuffer()))
+      }
     } catch (err) {
-      setError(`Couldn't read that PDF: ${err.message}`)
+      setError(`Couldn't read that file: ${err.message}`)
       setSections([])
     }
     setParsing(false)
     e.target.value = '' // let the same file be picked again after a fix
+  }
+
+  function onPaste() {
+    if (!pasted.trim()) return
+    startRead('pasted export', pasted.length)
+    try {
+      show(parseHoldingsExport(pasted))
+    } catch (err) {
+      setError(`Couldn't read that export: ${err.message}`)
+    }
+    setParsing(false)
   }
 
   // Changing the account type re-diffs that section against the holdings in the
@@ -353,8 +380,31 @@ export default function ImportStatement() {
             </div>
           )}
           <div style={{ marginTop: 12 }}>
-            <label className="field-label">Statement PDF</label>
-            <input type="file" accept="application/pdf" onChange={onFile} disabled={parsing || loading} />
+            <label className="field-label">Statement PDF or account export</label>
+            <input
+              type="file"
+              accept="application/pdf,.csv,.tsv,.txt,text/csv,text/plain"
+              onChange={onFile}
+              disabled={parsing || loading}
+            />
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label className="field-label">…or paste the account export</label>
+            <textarea
+              rows={3}
+              value={pasted}
+              onChange={e => setPasted(e.target.value)}
+              placeholder="Security	Security Symbol	Market	…"
+              style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 11 }}
+            />
+            <button className="btn small secondary" onClick={onPaste} disabled={!pasted.trim() || parsing}>
+              Read export
+            </button>
+            <div className="muted" style={{ marginTop: 4 }}>
+              The export from the account site's Holdings page carries the ticker
+              and account for every position, and is current rather than
+              month-end — so it needs no ticker lookups at all.
+            </div>
           </div>
           {fileName && (
             <div className="muted" style={{ marginTop: 6 }}>
@@ -397,7 +447,9 @@ export default function ImportStatement() {
           )}
           {sections.length > 0 && statementDate && (
             <div className="signal-reasons" style={{ marginTop: 10 }}>
-              This statement is dated <strong>{fmtStatementDate(statementDate)}</strong>.
+              {source === 'export'
+                ? <>Account export, holdings as of <strong>{fmtStatementDate(statementDate)}</strong>.</>
+                : <>This statement is dated <strong>{fmtStatementDate(statementDate)}</strong>.</>}
             </div>
           )}
           {alreadyImported.length > 0 && (
