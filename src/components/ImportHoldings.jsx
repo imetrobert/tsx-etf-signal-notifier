@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { normalizeTicker, displayTicker, fmtCad } from '../lib/tickers'
-import { parseStatementPdf, diffPositions, normalizeFundName, searchableFundName } from '../lib/statementParser'
+import { diffPositions, normalizeFundName, searchableFundName } from '../lib/funds'
 import { parseHoldingsExport } from '../lib/holdingsExport'
 import Navbar from './Navbar'
 
@@ -18,7 +18,7 @@ const ACTION_TAG = { add: 'buy', adjust: 'watch', remove: 'sell', none: 'hold' }
 
 const fmtUnits = n => Number(n).toLocaleString('en-CA', { maximumFractionDigits: 4 })
 
-// A statement date is a plain date with no timezone — anchor it to midday so it
+// A holdings date is a plain date with no timezone — anchor it to midday so it
 // can't slip to the previous day when rendered in a western timezone.
 const fmtStatementDate = d => d
   ? new Date(`${d}T12:00:00`).toLocaleDateString('en-CA', { year: 'numeric', month: 'long', day: 'numeric' })
@@ -27,10 +27,10 @@ const fmtImportDate = iso => iso
   ? new Date(iso).toLocaleDateString('en-CA', { year: 'numeric', month: 'long', day: 'numeric' })
   : '—'
 
-// The statement's accounts are grouped by the app account they map to, because
-// a statement can hold several that land in the same one — a CAD and a USD cash
+// The export's accounts are grouped by the app account they map to, because an
+// export can hold several that land in the same one — a CAD and a USD cash
 // account are both non-registered. Left separate, each would see the other's
-// funds as missing from the statement and propose removing them.
+// funds as missing and propose removing them.
 function buildSections(accounts, holdings, fundMap) {
   const groups = new Map()
   for (const acct of accounts) {
@@ -86,7 +86,7 @@ function sectionRows(group, holdings, fundMap, previousRows) {
   }
 }
 
-export default function ImportStatement() {
+export default function ImportHoldings() {
   const [holdings, setHoldings] = useState([])
   const [fundMap, setFundMap] = useState({})
   const [imports, setImports] = useState([])
@@ -94,14 +94,10 @@ export default function ImportStatement() {
   const [error, setError] = useState('')
   const [parsing, setParsing] = useState(false)
   const [fileName, setFileName] = useState('')
-  const [fileSize, setFileSize] = useState(0)
   const [statementDate, setStatementDate] = useState(null)
   const [warnings, setWarnings] = useState([])
-  const [diagnostics, setDiagnostics] = useState(null)
-  const [copiedDiagnostics, setCopiedDiagnostics] = useState(false)
   const [lookups, setLookups] = useState({})
   const [pasted, setPasted] = useState('')
-  const [source, setSource] = useState('statement')
   const [sections, setSections] = useState([])
   const [applying, setApplying] = useState(false)
   const [result, setResult] = useState(null)
@@ -126,53 +122,30 @@ export default function ImportStatement() {
 
   useEffect(() => { load() }, [load])
 
-  function show(parsed) {
-    setStatementDate(parsed.statementDate)
-    setWarnings(parsed.warnings)
-    setDiagnostics(parsed.diagnostics || null)
-    setSource(parsed.source || 'statement')
-    setSections(buildSections(parsed.accounts, holdings, fundMap))
-  }
-
-  function startRead(name, size) {
+  function read(text, name) {
     setParsing(true)
     setError('')
     setResult(null)
     setSections([])
     setWarnings([])
-    setDiagnostics(null)
     setFileName(name)
-    setFileSize(size)
+    try {
+      const parsed = parseHoldingsExport(text)
+      setStatementDate(parsed.statementDate)
+      setWarnings(parsed.warnings)
+      setSections(buildSections(parsed.accounts, holdings, fundMap))
+    } catch (err) {
+      setError(`Couldn't read that export: ${err.message}`)
+      setSections([])
+    }
+    setParsing(false)
   }
 
   async function onFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
-    startRead(file.name, file.size)
-    try {
-      // The account export is delimited text; a statement is a PDF.
-      if (/\.(csv|tsv|txt)$/i.test(file.name) || file.type.startsWith('text/')) {
-        show(parseHoldingsExport(await file.text()))
-      } else {
-        show(await parseStatementPdf(await file.arrayBuffer()))
-      }
-    } catch (err) {
-      setError(`Couldn't read that file: ${err.message}`)
-      setSections([])
-    }
-    setParsing(false)
+    read(await file.text(), file.name)
     e.target.value = '' // let the same file be picked again after a fix
-  }
-
-  function onPaste() {
-    if (!pasted.trim()) return
-    startRead('pasted export', pasted.length)
-    try {
-      show(parseHoldingsExport(pasted))
-    } catch (err) {
-      setError(`Couldn't read that export: ${err.message}`)
-    }
-    setParsing(false)
   }
 
   // Changing the account type re-diffs that section against the holdings in the
@@ -205,19 +178,6 @@ export default function ImportStatement() {
           error: "Lookup unavailable — redeploy the refresh-prices edge function to enable it.",
         },
       }))
-    }
-  }
-
-  // Structure only — page/fragment counts and which markers were recognized —
-  // so it can be pasted into a bug report without exposing holdings.
-  async function copyDiagnostics() {
-    const text = JSON.stringify({ fileName, fileSize, statementDate, warnings, diagnostics }, null, 1)
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopiedDiagnostics(true)
-      setTimeout(() => setCopiedDiagnostics(false), 2000)
-    } catch {
-      setError(text) // clipboard blocked — show it so it can be copied by hand
     }
   }
 
@@ -342,30 +302,31 @@ export default function ImportStatement() {
 
   return (
     <>
-      <Navbar subtitle="Import a Manulife statement to sync your holdings" />
+      <Navbar subtitle="Import your Manulife holdings export" />
       <main>
         <div className="card">
-          <h2>Import statement</h2>
+          <h2>Import holdings</h2>
           <p className="muted">
-            Attach the monthly PDF from Manulife Wealth. It's read on this
-            device — the file is never uploaded anywhere — and every change is
-            listed for you to approve before anything is saved. Once applied,
-            the statement becomes your Manulife holdings for the accounts it
-            covers: units are set to its numbers and funds it no longer lists
-            are removed. Wealthsimple holdings and accounts absent from the PDF
-            are never touched.
+            On the Manulife Wealth site, open <strong>Holdings</strong> and press{' '}
+            <strong>Export</strong>. Paste it below, or attach the downloaded
+            file. It's read on this device — nothing is uploaded — and every
+            change is listed for you to approve before anything is saved. Once
+            applied, the export becomes your Manulife holdings for the accounts
+            it covers: units are set to its numbers and funds it no longer lists
+            are removed. Wealthsimple holdings, and accounts absent from the
+            export, are never touched.
           </p>
           <div className="form-row" style={{ marginTop: 12 }}>
             <div>
               <label className="field-label">Last statement</label>
               <div className="stat-value">{fmtStatementDate(lastStatementDate)}</div>
-              <div className="muted">Date on the newest statement imported</div>
+              <div className="muted">Date of the newest holdings imported</div>
             </div>
             <div>
               <label className="field-label">Last import</label>
               <div className="stat-value">{fmtImportDate(lastImport?.created_at)}</div>
               <div className="muted">
-                {lastImport ? 'When it was applied here' : 'No statement imported yet'}
+                {lastImport ? 'When it was applied here' : 'Nothing imported yet'}
               </div>
             </div>
           </div>
@@ -373,98 +334,73 @@ export default function ImportStatement() {
             <div style={{ marginTop: 8 }}>
               {perAccount.map(a => (
                 <div key={a.key} className="signal-meta">
-                  {a.accountType ? acctLabel(a.accountType) : a.key}: statement{' '}
+                  {a.accountType ? acctLabel(a.accountType) : a.key}: holdings as of{' '}
                   {fmtStatementDate(a.statementDate)}, imported {fmtImportDate(a.importedAt)}
                 </div>
               ))}
             </div>
           )}
           <div style={{ marginTop: 12 }}>
-            <label className="field-label">Statement PDF or account export</label>
+            <label className="field-label">Paste the export</label>
+            <textarea
+              rows={4}
+              value={pasted}
+              onChange={e => setPasted(e.target.value)}
+              placeholder="Security	Security Symbol	Market	Asset Class	Account Number	…"
+              style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 11 }}
+            />
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <button className="btn small" onClick={() => read(pasted, 'pasted export')} disabled={!pasted.trim() || parsing}>
+                Read export
+              </button>
+              {pasted && (
+                <button className="btn small secondary" onClick={() => setPasted('')} disabled={parsing}>
+                  Clear
+                </button>
+              )}
+            </div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              Include the header row that starts “Security”. The export carries
+              the ticker and account for every position, so no ticker lookups
+              are needed.
+            </div>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label className="field-label">…or attach the downloaded file</label>
             <input
               type="file"
-              accept="application/pdf,.csv,.tsv,.txt,text/csv,text/plain"
+              accept=".csv,.tsv,.txt,text/csv,text/plain"
               onChange={onFile}
               disabled={parsing || loading}
             />
           </div>
-          <div style={{ marginTop: 12 }}>
-            <label className="field-label">…or paste the account export</label>
-            <textarea
-              rows={3}
-              value={pasted}
-              onChange={e => setPasted(e.target.value)}
-              placeholder="Security	Security Symbol	Market	…"
-              style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 11 }}
-            />
-            <button className="btn small secondary" onClick={onPaste} disabled={!pasted.trim() || parsing}>
-              Read export
-            </button>
-            <div className="muted" style={{ marginTop: 4 }}>
-              The export from the account site's Holdings page carries the ticker
-              and account for every position, and is current rather than
-              month-end — so it needs no ticker lookups at all.
-            </div>
-          </div>
-          {fileName && (
-            <div className="muted" style={{ marginTop: 6 }}>
-              {parsing ? 'Reading' : 'Read'} {fileName}
-              {fileSize ? ` (${(fileSize / 1024 / 1024).toFixed(1)} MB)` : ''}
-            </div>
+          {fileName && !parsing && (
+            <div className="muted" style={{ marginTop: 6 }}>Read {fileName}</div>
           )}
-          {parsing && <div className="muted" style={{ marginTop: 10 }}><span className="spin" /> Reading the statement…</div>}
+          {parsing && <div className="muted" style={{ marginTop: 10 }}><span className="spin" /> Reading…</div>}
           {error && <div className="err">{error}</div>}
           {warnings.length > 0 && (
             <div className="notice" style={{ marginTop: 10 }}>
               {warnings.map((w, i) => <div key={i}>{w}</div>)}
             </div>
           )}
-          {!parsing && diagnostics && sections.length === 0 && (
-            <div style={{ marginTop: 10 }}>
-              <div className="field-label">What was read</div>
-              <div className="signal-meta">
-                {diagnostics.pageCount} page(s), {diagnostics.textItems} text fragments,{' '}
-                {diagnostics.figureRows} numeric row(s) inside a table.
-              </div>
-              <div className="signal-meta">
-                Account number found: {diagnostics.sawAccount ? 'yes' : 'no'} · holdings table
-                found: {diagnostics.sawTable ? 'yes' : 'no'} · statement date found:{' '}
-                {statementDate ? 'yes' : 'no'}
-              </div>
-              <button
-                className="btn small secondary"
-                style={{ marginTop: 8 }}
-                onClick={() => copyDiagnostics()}
-              >
-                {copiedDiagnostics ? 'Copied!' : 'Copy details'}
-              </button>
-              <div className="muted" style={{ marginTop: 6 }}>
-                These details describe the PDF's structure only — no fund names,
-                amounts or account numbers — so they're safe to share when
-                reporting a statement that won't import.
-              </div>
-            </div>
-          )}
           {sections.length > 0 && statementDate && (
             <div className="signal-reasons" style={{ marginTop: 10 }}>
-              {source === 'export'
-                ? <>Account export, holdings as of <strong>{fmtStatementDate(statementDate)}</strong>.</>
-                : <>This statement is dated <strong>{fmtStatementDate(statementDate)}</strong>.</>}
+              Holdings as of <strong>{fmtStatementDate(statementDate)}</strong>.
             </div>
           )}
           {alreadyImported.length > 0 && (
             <div className="notice" style={{ marginTop: 10 }}>
-              A statement dated {fmtStatementDate(statementDate)} for this account was already
-              imported on {fmtImportDate(alreadyImported[0].created_at)}. Applying it again is
-              harmless — units are set to the statement's values, not added to them.
+              An import for this account was already applied today
+              ({fmtImportDate(alreadyImported[0].created_at)}). Doing it again is harmless —
+              units are set to the export's values, not added to them.
             </div>
           )}
           {staleStatement && (
             <div className="notice" style={{ marginTop: 10 }}>
-              This statement is older than the one you already imported
+              This export is older than the one you already imported
               ({fmtStatementDate(staleStatement)}). Applying it would roll your Manulife
-              holdings back to {fmtStatementDate(statementDate)} — check you picked the
-              right PDF.
+              holdings back to {fmtStatementDate(statementDate)}.
             </div>
           )}
         </div>
@@ -686,7 +622,7 @@ export default function ImportStatement() {
               {applying ? 'Applying…' : `Apply ${pending} change${pending === 1 ? '' : 's'}`}
             </button>
             <div className="muted" style={{ marginTop: 6 }}>
-              Nothing has been saved yet. Applying makes this statement your
+              Nothing has been saved yet. Applying makes this export your
               Manulife holdings for the account{sections.length > 1 ? 's' : ''} above —
               units set to its values, checked funds removed — and remembers each
               ticker you entered for next month.

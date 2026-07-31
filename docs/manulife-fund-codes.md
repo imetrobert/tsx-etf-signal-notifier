@@ -4,10 +4,11 @@ What each fund on the Manulife Wealth statement is, and the ticker to enter for
 it on the **Import** tab. Fund names and codes only — no unit counts or
 balances.
 
-The statement prints heavily abbreviated names (`FDLTY INSIG CL SR F -NL`) and
-no tickers at all, so the first import of a fund asks for one. Whatever is
-entered is remembered in `etf_fund_map`, so this is a one-time exercise per
-fund. This file is the paper trail for how each was identified.
+Kept as the paper trail for how each fund was identified, and as a fallback.
+**The account site's export supersedes it**: it states the ticker for every
+position outright, so the import needs no codes from here. Where the two
+disagree, the export wins — it is the broker's own record. It corrected two
+entries below, marked ⚠️.
 
 ## Which kind of code to enter
 
@@ -39,7 +40,7 @@ Statement names as printed, per account, from the June 30 2026 statement.
 | `GOC AA PRT CLS SR F` | Canoe Asset Allocation Portfolio Class Series F | `GOC303` |
 | `MMF MLF GLB MO HI INC CL` | Manulife Global Monthly High Income Class | `MMF8637` (Series F — statement doesn't print the series) |
 | `MMF MLF DIV INC CL` | Manulife Dividend Income Class | `MMF8645` (Series F — same caveat) |
-| `RBF Q MN WE CL F` | RBC QUBE Market Neutral World Equity Fund F | `RBF1441` or `RBF2941` — `RBF9941` is the US$ series |
+| `RBF Q MN WE CL F` | RBC QUBE Market Neutral World Equity Fund F | ⚠️ `RBF941` per the export — research had suggested `RBF1441`/`RBF2941`, both wrong |
 | `BNS INV SAV ACT SR A -NL $US` | Scotia US$ Investment Savings Account | — a savings account, always $1.00/unit. Not a security; don't import |
 
 ### Locked-in RRSP
@@ -52,15 +53,15 @@ Statement names as printed, per account, from the June 30 2026 statement.
 
 | Statement name | Fund | Enter |
 |---|---|---|
-| `CI U.S. QUALITY DIVDND GRT ETF` | CI U.S. Quality Dividend Growth Index ETF | `DGR.TO` (CAD-hedged) or `DGR.B.TO` (unhedged) — compare the price to decide |
+| `CI U.S. QUALITY DIVDND GRT ETF` | CI U.S. Quality Dividend Growth Index ETF | `DGR-B.TO` — the export shows `DGR.B`, the unhedged series |
 | `VANGUARD GLOBAL VALUE ETF UN` | Vanguard Global Value Factor ETF | `VVL.TO` |
-| `BMO TACT GLB EQ ETF` | BMO Tactical Global Equity ETF Fund F | `BMO68217` (`BMO95217` is the same series sold no-load) |
+| `BMO TACT GLB EQ ETF` | BMO Tactical Global Equity ETF Fund F | ⚠️ `BMO95217` per the export — the no-load variant, not `BMO68217` |
 | `CI PREC MTL FD CL F` | CI Precious Metals **Fund** Series F | `CIG54203` (`CIG54003` is the *Class* version) |
 | `CIG FD CL F` | CI Ethereum Fund Series F C$ | `CIG4082` — see note below |
 | `DYNAMIC PREM BAL PP CL F` | Dynamic Premium Balanced Private Pool Class F | `DYN3915` |
 | `FDLTY GLOBAL EQUITY+ SR F` | Fidelity Global Equity+ Fund Series F | `FID7648` (Yahoo: `0P0001RNX5.TO`) |
 | `FDLTY INSIG CL SR F` | Fidelity Insights Class Series F | `FID5494` (Yahoo: `0P00019WHF.TO`) |
-| `CCM TRGT CLICK 2030 FUND F` | iA Clarington Target Click 2030 Fund F | **unresolved** — see note below |
+| `CCM TRGT CLICK 2030 FUND F` | iA Clarington Target Click 2030 Fund F | `CCM8028` per the export |
 | `GOOD NATURED PRODS INC*` | good natured Products Inc. | — delisted from the TSXV in November 2024 after Hilco Capital acquired the company; the position shows 4 units at $0.00. No live ticker; don't import |
 
 ### TFSA
@@ -79,10 +80,10 @@ It rests on the position matching the 2023 statement's `CI ETHEREUM FUND A -FE`
 (741 units at $8.20 then, 724 at $8.09 now) and a CAD Series F existing at
 `CIG4082`. Check the NAV before relying on it.
 
-**`CCM TRGT CLICK 2030 FUND F` — no public code.** Only Series A (`CCM8025`) is
-listed on the Globe and Mail; the Series F code appears nowhere public, which
-fits a closed maturity-date fund. Ask the advisor or read it off a trade
-confirmation. Series A's code would price the wrong series.
+**`CCM TRGT CLICK 2030 FUND F` — resolved by the export as `CCM8028`.** No
+public listing carries it: only Series A (`CCM8025`) is on the Globe and Mail,
+which fits a closed maturity-date fund. This is the clearest illustration of
+why the export beats research.
 
 **The two `MMF` funds print no series.** Every other holding shows `SR F` or
 `CL F`; these show neither. Series F is the reasonable assumption given the

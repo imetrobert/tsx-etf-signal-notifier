@@ -9,7 +9,7 @@
 //
 // Produces the same shape as the statement parser, so both feed one review.
 
-import { normalizeFundName } from './statementParser.js'
+import { normalizeFundName } from './funds.js'
 
 // Account Type as the export words it → the account types this app tracks.
 const ACCOUNT_TYPES = [
@@ -37,8 +37,14 @@ const CASH_ROW = /^(CASH|CASH BALANCE)$/i
 // Minimal TSV/CSV reader: quoted fields may contain the delimiter, and ""
 // escapes a quote inside one.
 export function parseDelimited(text) {
-  const body = String(text).replace(/\r\n?/g, '\n').trim()
+  let body = String(text).replace(/\r\n?/g, '\n').trim()
   if (!body) return []
+  const firstLine = body.slice(0, body.indexOf('\n') + 1 || undefined)
+  // Copying a table out of a browser can lose the tabs and leave columns
+  // separated by runs of spaces; treat those as the delimiter instead.
+  if (!firstLine.includes('\t') && !firstLine.includes(',')) {
+    body = body.replace(/ {2,}/g, '\t')
+  }
   const delimiter = body.slice(0, body.indexOf('\n') + 1 || undefined).includes('\t') ? '\t' : ','
   const rows = []
   let row = []
@@ -126,10 +132,19 @@ export function parseHoldingsExport(text) {
   const accounts = new Map()
   let skippedCash = 0
   const skippedAccounts = new Set()
+  const unreadable = []
 
   for (const row of rows.slice(1)) {
     const name = (row[col.security] ?? '').trim()
     if (!name) continue
+    // A row with the wrong number of columns has its values under the wrong
+    // headings. Reading it anyway could import a wrong unit count, and dropping
+    // it quietly is worse still — the fund would look sold and be offered for
+    // removal — so it is skipped loudly.
+    if (row.length !== header.length) {
+      unreadable.push(name)
+      continue
+    }
     const accountTypeText = (row[col.accountType] ?? '').trim()
     const quantity = num(row[col.quantity])
     if (quantity == null || quantity <= 0) continue
@@ -180,6 +195,12 @@ export function parseHoldingsExport(text) {
     warnings.push(`Skipped ${[...skippedAccounts].join(', ')} — this app doesn't track those accounts.`)
   }
   if (skippedCash) warnings.push(`Skipped ${skippedCash} cash balance row(s) — cash isn't a tracked holding.`)
+  if (unreadable.length) {
+    warnings.push(
+      `Couldn't read ${unreadable.length} row(s) — their columns don't line up with the header: ` +
+      `${unreadable.join(', ')}. They are missing from the changes below, so don't approve a removal ` +
+      `for them. Copy the export again, or attach the downloaded file instead of pasting.`)
+  }
   if (!list.length) warnings.push('No holdings found in that export.')
 
   return {
