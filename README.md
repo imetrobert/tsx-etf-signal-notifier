@@ -67,67 +67,43 @@ identifiable from a phone's lock screen. The name is stored on each signal
 (`etf_signals.asset_name`), so re-run `supabase/schema.sql` after
 deploying this change.
 
-**Account export import** (the easy path): the account site's Holdings page
-has an **Export**, and it is the best source of the three — it carries the
-ticker *and* the account for every position, and is current rather than
-month-end, so it needs no ticker lookups at all. Paste it into the Import
-tab or attach the file. Broker symbols are translated to the ones Yahoo
-indexes (`VVL` → `VVL.TO`, `DGR.B` → `DGR-B.TO`, `FBAL` on Cboe →
-`FBAL.NE`); FundSERV codes for the OTC funds are left as they are, since
-the Globe and Mail fallback expects the bare code. Cash rows and RESP
-accounts are skipped, and the same approve-before-writing diff applies.
+**Holdings import**: the **Import** tab syncs your Manulife holdings from the
+account site's export. On the site, open **Holdings** and press **Export**,
+then paste it into the tab or attach the downloaded file. It carries the
+ticker *and* the account for every position and is current rather than
+month-end, so no ticker research is needed. It is read on the device —
+nothing is uploaded — and nothing is written until the listed changes are
+approved.
 
-**Monthly statement import**: the **Import** tab also takes the PDF statement
-Manulife Wealth sends each month and syncs the holdings table to it. Both
-statement formats are handled — the older Manulife Securities one (one
-account per statement, "Investment Funds and Deposit Notes") and the
-Fidelity-cleared Manulife Wealth one (every account in a single statement,
-"Account Holdings"), whose accounts are grouped by the app account they map
-to, so a CAD and a USD cash account are compared together as one
-non-registered holding set rather than each proposing to delete the other's
-funds. The PDF is parsed on the device with pdf.js — it is never uploaded anywhere —
-and nothing is written until the listed changes are approved. It reads the
-statement date, the account (`RRSP N359858R` → your RRSP), and every
-position's fund name and unit count, then shows a per-fund diff: **add**
-for funds that appeared (a new purchase, or the buy half of a switch),
-**adjust** where the unit count moved, **remove** for funds that are on
-file but no longer on the statement (a sale, or the sell half of a switch),
-and unchanged funds for completeness. Each row has a checkbox, so a partial
-import is fine.
+The review shows a per-fund diff: **add** for funds that appeared, **adjust**
+where the unit count moved, **remove** for funds on file but absent from the
+export, and unchanged funds for completeness. Each row has a checkbox, so a
+partial import is fine. Units are *set* to the export's values rather than
+added, so importing twice can't double-count. Applied imports are logged to
+`etf_statement_imports`, which is what fills the **Last holdings** and **Last
+import** dates.
 
-Manulife statements print fund names but no tickers, so the first import of
-a fund asks for one. A **Find ticker** button searches Yahoo by fund name —
-proxied through the `refresh-prices` edge function, since Yahoo's search has
-no CORS headers — and offers the matches as one-click buttons, preferring
-Canadian listings. A fund matched to a Yahoo id (`0P…`) gets NAV history and
-so generates signals; a FundSERV code (`FID5494`) only gets a current price
-through the Globe and Mail fallback. Statement abbreviations are expanded
-before searching and for the **pre-filled nickname** ("FDLTY INSIG CL SR F"
-→ "Fidelity Insights Class Series F"), editable before saving.
-`docs/manulife-fund-codes.md` records the codes already identified. Each ticker
-you enter is remembered in `etf_fund_map`, so the same fund is recognized
-automatically next month. Applied imports are logged to
-`etf_statement_imports`, which is what lets the tab warn you that a
-statement has already been imported. Units are always *set* to the
-statement's values rather than added to them, so re-importing the same PDF
-can't double-count. Both tables come from `supabase/schema.sql` — re-run it
-before the first import (the import still applies holdings changes without
-them, it just can't remember tickers).
+Broker symbols aren't Yahoo symbols, so they are translated by the export's
+Market column: TSX gets `.TO`, TSX Venture `.V`, Cboe Canada `.NE`, and a
+class share printed `DGR.B` becomes `DGR-B.TO`. FundSERV codes for the OTC
+funds are left exactly as they are — they aren't Yahoo symbols at all, and
+the Globe and Mail fallback expects the bare code, which means those funds
+get a price but no signals. Cash rows and RESP accounts are skipped, and both
+skips are reported rather than silent. A row whose columns don't line up with
+the header is skipped *loudly*: reading it could import a wrong unit count,
+and dropping it quietly would make the fund look sold and offer it for
+removal.
 
-Figures are read as the trailing run of numbers on each row and mapped by
-position — first is the quantity, last two are the market price and value —
-so no column coordinate is ever assumed. Every row is checked against
-units × price = market value, which means a layout that isn't understood is
-rejected rather than silently misread, and a fund name ending in a number
-("TARGET CLICK 2030") isn't mistaken for a figure. A statement that can't be
-read reports what *was* read — pages, text fragments, numeric rows, and which
-markers were recognized — with a copy button; those details are structural
-only, no fund names or amounts.
+Fund names arrive abbreviated, so they are expanded for the pre-filled
+**nickname** — "FDLTY INSIG CL SR F -NL" becomes "Fidelity Insights Class
+Series F" — editable before saving. A position the export gives no symbol for
+still imports and asks; a **Find ticker** button searches Yahoo by name,
+proxied through the `refresh-prices` edge function since Yahoo's search sends
+no CORS headers. Tickers are remembered in `etf_fund_map`, seeded from
+`docs/manulife-fund-codes.md`.
 
-`npm test` runs the parser's test suite: line reconstruction from pdf.js
-fragments, both statement formats, wrapped fund names, the `s`/`c`
-segregation sub-rows and `seg` held-in markers, 3-/4-/5-column layouts and
-shifted columns, account-type mapping, and the diff logic.
+`npm test` covers the export reader, symbol translation, account mapping, the
+skips, name expansion and the diff.
 
 A **↻ Refresh** button in the header fetches live prices
 on demand via the `refresh-prices` Supabase Edge Function
@@ -145,7 +121,7 @@ reloading the last stored data and says so.
 ├── supabase/schema.sql              # etf_* tables — paste into Supabase SQL editor (idempotent)
 ├── scripts/
 │   ├── run-signals.js               # the daily signal engine (Node, run by Actions)
-│   └── test-statement-parser.mjs    # parser tests (npm test)
+│   └── test-holdings-import.mjs     # import tests (npm test)
 ├── .github/workflows/
 │   ├── deploy.yml                   # build + deploy to GitHub Pages on push to main
 │   └── daily-signals.yml            # weekday cron + manual run (test_email option)
@@ -155,7 +131,7 @@ reloading the last stored data and says so.
     ├── lib/
     │   ├── supabase.js              # client (graceful when secrets missing)
     │   ├── tickers.js               # XEQT → XEQT.TO normalization, CAD formatting
-    │   ├── statementParser.js       # Manulife statement PDF → positions + diff
+    │   ├── funds.js                 # fund-name expansion + the holdings diff
     │   └── holdingsExport.js        # account-site export (TSV/CSV) → positions
     └── components/
         ├── Login.jsx                # shared-credential sign-in
@@ -163,7 +139,7 @@ reloading the last stored data and says so.
         ├── Dashboard.jsx            # holdings CRUD + values + portfolio total
         ├── Watchlist.jsx            # watchlist CRUD + price / vs-200-day
         ├── SignalHistory.jsx        # every fired signal
-        └── ImportStatement.jsx      # monthly statement PDF → approve → sync holdings
+        └── ImportHoldings.jsx       # account export → approve → sync holdings
 ```
 
 ## Supabase tables (shared project, `etf_` prefix)
