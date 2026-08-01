@@ -71,6 +71,11 @@ alter table etf_signals add column if not exists account_advice text;
 -- Human-readable name captured when the signal fired: the holding's nickname
 -- (etf_holdings.fund_name) if set, else the fund name Yahoo reports.
 alter table etf_signals add column if not exists asset_name text;
+-- Institution(s) holding this ticker when the signal fired (comma-joined,
+-- e.g. 'MANULIFE' or 'WEALTHSIMPLE'), captured the same way and for the same
+-- reason as asset_name: a later ticker rename or holding edit must not break
+-- which institution a past signal belongs to.
+alter table etf_signals add column if not exists institutions text;
 
 -- Per-ticker signal state so the same condition never emails twice in a row.
 create table if not exists etf_signal_state (

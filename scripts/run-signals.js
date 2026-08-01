@@ -368,7 +368,7 @@ async function sendEmail(signals, regime, regimeChange) {
 
 async function main() {
   const [holdings, watchlist, states] = await Promise.all([
-    db.from('etf_holdings').select('ticker, account, fund_name'),
+    db.from('etf_holdings').select('ticker, account, institution, fund_name'),
     db.from('etf_watchlist').select('ticker'),
     db.from('etf_signal_state').select('*'),
   ])
@@ -377,9 +377,12 @@ async function main() {
   const tickers = [...new Set([...holdings.data, ...watchlist.data].map(r => r.ticker))]
   const accountsByTicker = {}
   const nicknameByTicker = {}
+  const institutionsByTicker = {}
   for (const r of holdings.data) {
     ;(accountsByTicker[r.ticker] ??= []).push(r.account || 'NON_REG')
     if (r.fund_name) nicknameByTicker[r.ticker] ??= r.fund_name
+    const insts = (institutionsByTicker[r.ticker] ??= new Set())
+    insts.add(r.institution || 'WEALTHSIMPLE')
   }
   const lastStates = Object.fromEntries(states.data.map(r => [r.ticker, r.last_state]))
   console.log(`Evaluating ${tickers.length} tickers: ${tickers.join(', ')}`)
@@ -432,14 +435,20 @@ async function main() {
 
       if (signal) {
         const advice = accountAdvice(signal.dir, accountsByTicker[ticker] || [])
+        const institutions = [...(institutionsByTicker[ticker] || [])].join(',') || null
         const row = {
           ticker, signal: signal.dir, reasons: signal.reasons,
           est_recovery_text: signal.est, account_advice: advice, price: ind.price,
         }
-        let { error } = await db.from('etf_signals').insert({ ...row, asset_name: name })
+        // Try with both optional columns, then drop whichever the DB doesn't have yet
+        // (installs that haven't re-run supabase/schema.sql) and retry.
+        let { error } = await db.from('etf_signals').insert({ ...row, asset_name: name, institutions })
         if (error?.message?.includes('asset_name')) {
-          // Column missing — installs that haven't re-run supabase/schema.sql yet.
           console.warn('  etf_signals.asset_name missing (re-run supabase/schema.sql) — saving without the name')
+          ;({ error } = await db.from('etf_signals').insert({ ...row, institutions }))
+        }
+        if (error?.message?.includes('institutions')) {
+          console.warn('  etf_signals.institutions missing (re-run supabase/schema.sql) — saving without it')
           ;({ error } = await db.from('etf_signals').insert(row))
         }
         if (error) throw new Error(error.message)

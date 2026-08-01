@@ -4,6 +4,16 @@ import { displayTicker, fmtCad } from '../lib/tickers'
 import Navbar from './Navbar'
 
 const ACCOUNT_LABEL = { TFSA: 'TFSA', RRSP: 'RRSP', LIRA: 'Locked-in RRSP', NON_REG: 'Non-registered' }
+const INSTITUTION_LABEL = { MANULIFE: 'Manulife Wealth', WEALTHSIMPLE: 'Wealthsimple' }
+
+// The institutions captured on the signal at fire time win — a later ticker
+// rename or holding edit must not change which institution a past signal
+// belongs to. Older signals from before this was captured fall back to a
+// live join against current holdings.
+function signalInstitutions(signal, tickerHoldings) {
+  if (signal.institutions) return signal.institutions.split(',').filter(Boolean)
+  return [...new Set(tickerHoldings.map(h => h.institution))]
+}
 
 // The nickname on the holding wins; otherwise the name captured when the
 // signal fired (Yahoo's fund name); otherwise just the symbol.
@@ -13,15 +23,21 @@ function assetName(signal, holdings) {
 
 function draftAdvisorEmail(signal, holdings) {
   const name = assetName(signal, holdings) || displayTicker(signal.ticker)
-  const accounts = [...new Set(holdings.map(h => ACCOUNT_LABEL[h.account] || h.account))]
-  const totalShares = holdings.reduce((s, h) => s + Number(h.shares), 0)
   const dir = signal.signal === 'BUY' ? 'BUY' : 'SELL/TRIM'
   const subject = `${dir} signal on ${name} — your thoughts?`
+  // Prefer current holdings for the account/unit detail; if the ticker's since
+  // been renamed or the position closed, degrade gracefully rather than
+  // rendering an empty account list.
+  let heldClause = ' at Manulife Wealth'
+  if (holdings.length) {
+    const accounts = [...new Set(holdings.map(h => ACCOUNT_LABEL[h.account] || h.account))]
+    const totalShares = holdings.reduce((s, h) => s + Number(h.shares), 0)
+    heldClause = `, which I hold in my ${accounts.join(' and ')} account${accounts.length > 1 ? 's' : ''} at Manulife Wealth (${totalShares} units total)`
+  }
   const lines = [
     'Hi Brad,',
     '',
-    `My portfolio tracker flagged a ${dir} signal on ${name} (${signal.ticker}), which I hold in my ` +
-      `${accounts.join(' and ')} account${accounts.length > 1 ? 's' : ''} at Manulife Wealth (${totalShares} units total).`,
+    `My portfolio tracker flagged a ${dir} signal on ${name} (${signal.ticker})${heldClause}.`,
     '',
     `Signal reasoning: ${signal.reasons}`,
   ]
@@ -95,9 +111,11 @@ export default function SignalHistory() {
             signals.map(s => {
               const tickerHoldings = holdings.filter(h => h.ticker === s.ticker)
               const manulifeHoldings = tickerHoldings.filter(h => h.institution === 'MANULIFE')
+              const institutions = signalInstitutions(s, tickerHoldings)
+              const isManulife = institutions.includes('MANULIFE')
               const name = assetName(s, tickerHoldings)
               const isOpen = openEmailId === s.id
-              const { subject, body } = isOpen || manulifeHoldings.length
+              const { subject, body } = isOpen || isManulife
                 ? draftAdvisorEmail(s, manulifeHoldings)
                 : { subject: '', body: '' }
               return (
@@ -120,13 +138,22 @@ export default function SignalHistory() {
                     </span>
                     <span className="muted">{new Date(s.created_at).toLocaleDateString('en-CA')}</span>
                   </div>
+                  {institutions.length > 0 && (
+                    <div style={{ marginTop: 4 }}>
+                      {institutions.map(inst => (
+                        <span key={inst} className="tag acct" style={{ marginRight: 4 }}>
+                          {INSTITUTION_LABEL[inst] || inst}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div className="signal-reasons">{s.reasons}</div>
                   <div className="signal-meta">
                     {s.price != null && <>Price at signal: {fmtCad.format(s.price)}. </>}
                     {s.est_recovery_text && <>{s.est_recovery_text}</>}
                   </div>
                   {s.account_advice && <div className="signal-meta" style={{ color: 'var(--ledger)' }}>{s.account_advice}</div>}
-                  {manulifeHoldings.length > 0 && (
+                  {isManulife && (
                     <div style={{ marginTop: 8 }}>
                       <button
                         className="btn small secondary"
