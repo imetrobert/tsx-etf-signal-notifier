@@ -176,10 +176,16 @@ rest; the daily job writes via the service-role key.
 | `EMAILJS_TEMPLATE_ID` | signals | template: subject={{subject}}, body={{{content}}}, to={{to_email}}, from=invoices@aiwithrobert.com |
 | `EMAILJS_PUBLIC_KEY` / `EMAILJS_PRIVATE_KEY` | signals | EmailJS account API keys |
 | `NOTIFY_EMAIL` | signals | where alerts are sent |
+| `SUPABASE_DB_URL` | apply-schema | Postgres connection string — Supabase dashboard → Project Settings → Database → Connection string → **Session pooler** (not "Direct connection", which needs the IPv4 add-on on GitHub's runners); paste the URI with the real password substituted in |
 
 ## Phone-only maintenance
 
 - **Edit holdings/watchlist**: in the app itself — no code changes ever needed.
+- **Schema changes apply themselves**: any push to main that touches
+  `supabase/schema.sql` runs it against the database automatically (the
+  "Apply Supabase schema" workflow) — no more copy-pasting into the SQL
+  editor. It's safe to re-run (idempotent), and can also be triggered
+  manually: Actions → "Apply Supabase schema" → Run workflow.
 - **Run signals now**: repo → Actions → "Daily ETF signals" → Run workflow
   (check "Send a test email" to verify delivery).
 - **Change alert sensitivity**: edit `STRETCH_PCT` at the top of
