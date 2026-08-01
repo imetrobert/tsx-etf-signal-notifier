@@ -40,8 +40,20 @@ create unique index if not exists etf_holdings_ticker_acct_inst_key
 create table if not exists etf_watchlist (
   id uuid primary key default gen_random_uuid(),
   ticker text not null unique,
+  source text not null default 'MANUAL'
+    constraint etf_watchlist_source_chk check (source in ('MANUAL','AUTO')),
+  auto_reason text,
   created_at timestamptz not null default now()
 );
+-- Auto-curation: the daily job scans a fixed universe of diverse TSX ETFs
+-- (not just holdings/watchlist) and adds ones showing a fresh golden-cross
+-- or dip signal here, with the reason recorded — no manual upkeep needed.
+alter table etf_watchlist add column if not exists source text not null default 'MANUAL';
+do $$ begin
+  alter table etf_watchlist add constraint etf_watchlist_source_chk
+    check (source in ('MANUAL','AUTO'));
+exception when duplicate_object then null; end $$;
+alter table etf_watchlist add column if not exists auto_reason text;
 
 -- Latest market snapshot per ticker, refreshed by the daily signal job.
 create table if not exists etf_prices (

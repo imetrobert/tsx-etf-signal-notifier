@@ -18,6 +18,15 @@ The signal job runs hourly through the trading day (weekdays ~9am–5pm
 Toronto) plus a final after-close run, evaluating every ticker in your
 holdings + watchlist:
 
+**Auto-curated watchlist**: alongside holdings/watchlist, the job also scans
+a fixed pool of ~35 diverse, liquid TSX ETFs (`CANDIDATE_UNIVERSE` in
+`scripts/run-signals.js`) spanning broad market, fixed income, sector,
+dividend/factor, and preferred-share categories. One showing a fresh
+golden-cross or dip signal is auto-added to `etf_watchlist`
+(`source='AUTO'`, with the reason recorded) and tracked from then on — no
+manual curation needed. The Watchlist tab marks these "auto-added" with the
+reason on tap; remove one anytime the same way as a manual entry.
+
 | Indicator | Rule | Alert |
 |---|---|---|
 | Trend | 50-day MA crosses **above** 200-day MA (golden cross) | BUY |

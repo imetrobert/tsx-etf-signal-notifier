@@ -100,7 +100,17 @@ export default function Watchlist() {
                     const p = prices[w.ticker]
                     return (
                       <tr key={w.id}>
-                        <td><span className="ticker">{displayTicker(w.ticker)}</span></td>
+                        <td>
+                          <span className="ticker">{displayTicker(w.ticker)}</span>
+                          {w.source === 'AUTO' && (
+                            <>
+                              <br />
+                              <span className="tag acct" title={w.auto_reason || 'Auto-added: notable setup detected'}>
+                                auto-added
+                              </span>
+                            </>
+                          )}
+                        </td>
                         <td className="num">{p?.price != null ? fmtCad.format(p.price) : '—'}</td>
                         <td className="num">
                           {p?.pct_vs_ma200 != null
@@ -119,6 +129,9 @@ export default function Watchlist() {
           )}
           <div className="muted" style={{ marginTop: 10 }}>
             Your holdings are always monitored for signals — this list adds extra ETFs on top.
+            The daily job also scans a broader pool of TSX ETFs on its own and adds any
+            showing a fresh golden-cross or dip signal here automatically (marked
+            "auto-added" — tap for why); remove one anytime if you're not interested.
             {(() => {
               const last = Object.values(prices).map(p => p.updated_at).sort().pop()
               return last

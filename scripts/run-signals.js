@@ -13,6 +13,26 @@ import { createClient } from '@supabase/supabase-js'
 
 const STRETCH_PCT = 10 // alert when price is this % above/below its 200-day MA
 
+// Fixed pool of diverse, liquid TSX ETFs the daily job scans in addition to
+// holdings/watchlist. One showing a fresh golden-cross or dip signal gets
+// auto-added to etf_watchlist (source 'AUTO', reason recorded) so it keeps
+// being tracked from then on — no manual curation needed. Never shown to the
+// user directly; it's just the pool candidates are drawn from.
+const CANDIDATE_UNIVERSE = [
+  // Broad market
+  'XIC.TO', 'VCN.TO', 'ZCN.TO', 'VFV.TO', 'ZSP.TO', 'XUU.TO', 'VUN.TO',
+  'XAW.TO', 'VXC.TO', 'XEF.TO', 'VIU.TO', 'XEC.TO',
+  // Fixed income
+  'XBB.TO', 'ZAG.TO', 'VAB.TO', 'XSB.TO', 'XSH.TO',
+  // Sector
+  'XFN.TO', 'ZEB.TO', 'XEG.TO', 'ZEO.TO', 'XIT.TO', 'ZQQ.TO', 'ZUT.TO',
+  'XMA.TO', 'XGD.TO', 'XRE.TO', 'ZRE.TO', 'XHC.TO',
+  // Dividend / factor
+  'XDIV.TO', 'VDY.TO', 'ZDV.TO', 'XEI.TO', 'ZLB.TO', 'CDZ.TO',
+  // Preferred shares
+  'ZPR.TO', 'CPD.TO',
+]
+
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error('Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY')
@@ -374,7 +394,10 @@ async function main() {
   ])
   for (const r of [holdings, watchlist, states]) if (r.error) throw new Error(r.error.message)
 
-  const tickers = [...new Set([...holdings.data, ...watchlist.data].map(r => r.ticker))]
+  const heldOrWatchedTickers = new Set([...holdings.data, ...watchlist.data].map(r => r.ticker))
+  // Scan the candidate universe too, minus anything already tracked, so a
+  // fresh setup on one of them gets auto-added to the watchlist below.
+  const tickers = [...new Set([...heldOrWatchedTickers, ...CANDIDATE_UNIVERSE])]
   const accountsByTicker = {}
   const nicknameByTicker = {}
   const institutionsByTicker = {}
@@ -453,6 +476,15 @@ async function main() {
         }
         if (error) throw new Error(error.message)
         fired.push({ ticker, name, dir: signal.dir, reasons: signal.reasons, est: signal.est, advice, price: ind.price })
+
+        // Candidate-universe ticker with a fresh setup, not already tracked —
+        // start watching it from here on, recording why.
+        if (!heldOrWatchedTickers.has(ticker)) {
+          const { error: wErr } = await db.from('etf_watchlist')
+            .upsert({ ticker, source: 'AUTO', auto_reason: signal.reasons }, { onConflict: 'ticker' })
+          if (wErr) console.error(`  auto-watchlist add failed for ${ticker}: ${wErr.message}`)
+          else console.log(`  ${ticker}: auto-added to watchlist (${signal.dir} signal)`)
+        }
       }
       await new Promise(r => setTimeout(r, 400)) // be polite to Yahoo
     } catch (e) {
