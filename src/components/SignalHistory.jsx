@@ -61,7 +61,7 @@ export default function SignalHistory() {
   const [error, setError] = useState('')
   const [openEmailId, setOpenEmailId] = useState(null)
   const [copiedId, setCopiedId] = useState(null)
-  const [onlyHeld, setOnlyHeld] = useState(false)
+  const [onlyHeld, setOnlyHeld] = useState(true)
 
   const load = useCallback(async () => {
     setError('')
