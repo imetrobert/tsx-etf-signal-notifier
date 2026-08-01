@@ -61,6 +61,7 @@ export default function SignalHistory() {
   const [error, setError] = useState('')
   const [openEmailId, setOpenEmailId] = useState(null)
   const [copiedId, setCopiedId] = useState(null)
+  const [onlyHeld, setOnlyHeld] = useState(false)
 
   const load = useCallback(async () => {
     setError('')
@@ -93,12 +94,21 @@ export default function SignalHistory() {
     }
   }
 
+  const heldTickers = new Set(holdings.map(h => h.ticker))
+  const visibleSignals = onlyHeld ? signals.filter(s => heldTickers.has(s.ticker)) : signals
+
   return (
     <>
       <Navbar subtitle="Every alert the daily check has fired" onRefresh={refresh} refreshing={refreshing} />
       <main>
         <div className="card">
           <h2>Signal history</h2>
+          {!loading && signals.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12, cursor: 'pointer' }}>
+              <input type="checkbox" checked={onlyHeld} onChange={e => setOnlyHeld(e.target.checked)} style={{ width: 'auto' }} />
+              <span className="muted">Only funds I currently hold</span>
+            </label>
+          )}
           {error && <div className="err">{error}</div>}
           {loading ? (
             <div className="empty"><span className="spin" /></div>
@@ -107,8 +117,10 @@ export default function SignalHistory() {
               No signals yet. The daily check only fires on strong setups —
               quiet is normal.
             </div>
+          ) : visibleSignals.length === 0 ? (
+            <div className="empty">No signals for funds you currently hold.</div>
           ) : (
-            signals.map(s => {
+            visibleSignals.map(s => {
               const tickerHoldings = holdings.filter(h => h.ticker === s.ticker)
               const manulifeHoldings = tickerHoldings.filter(h => h.institution === 'MANULIFE')
               const institutions = signalInstitutions(s, tickerHoldings)
