@@ -34,6 +34,12 @@ reason on tap; remove one anytime the same way as a manual entry.
 | Stretch | Price drops to **10%+ below** its 200-day MA | BUY (dip) |
 | Stretch | Price rises to **10%+ above** its 200-day MA | SELL/TRIM |
 
+**BUY-only for anything you don't own**: a SELL/trim alert is meaningless for
+a ticker that isn't held, so watchlist entries and auto-scanned candidates
+only ever generate BUY alerts — a SELL/trim condition on one of those is
+tracked silently (so the next real change is still caught) but never fires
+or emails. Holdings get both directions, same as always.
+
 **Market-regime layer**: every run also checks three free official macro
 gauges — the Canadian 10y−2y yield curve (Bank of Canada Valet API), US
 high-yield credit spreads and the Sahm recession indicator (FRED). Two or

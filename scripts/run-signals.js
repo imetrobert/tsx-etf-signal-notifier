@@ -394,6 +394,7 @@ async function main() {
   ])
   for (const r of [holdings, watchlist, states]) if (r.error) throw new Error(r.error.message)
 
+  const heldTickers = new Set(holdings.data.map(r => r.ticker))
   const heldOrWatchedTickers = new Set([...holdings.data, ...watchlist.data].map(r => r.ticker))
   // Scan the candidate universe too, minus anything already tracked, so a
   // fresh setup on one of them gets auto-added to the watchlist below.
@@ -435,7 +436,11 @@ async function main() {
       const { series, currency, name: yahooName } = await fetchHistory(ticker)
       const name = nicknameByTicker[ticker] || yahooName || null
       const ind = computeIndicators(series)
-      const { stateKey, signal } = evaluate(ticker, assetLabel(ticker, name), ind, lastStates[ticker] ?? null, series)
+      const { stateKey, signal: rawSignal } = evaluate(ticker, assetLabel(ticker, name), ind, lastStates[ticker] ?? null, series)
+      // A SELL/trim alert is meaningless for something not actually owned —
+      // watchlist and auto-scanned candidates only ever get BUY alerts.
+      // State is still tracked either way so the next real change is caught.
+      const signal = (rawSignal?.dir === 'SELL' && !heldTickers.has(ticker)) ? null : rawSignal
 
       const { error: pErr } = await db.from('etf_prices').upsert({
         ticker,
