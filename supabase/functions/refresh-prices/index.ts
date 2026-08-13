@@ -201,6 +201,18 @@ Deno.serve(async (req) => {
       })
       if (error) throw new Error(error.message)
       updated++
+
+      // Backfill the holding's nickname from Yahoo's own name for the
+      // security when one hasn't been set — covers tickers added manually
+      // without typing a name in (e.g. XIC), not just Manulife imports.
+      const yahooName: string | undefined = result.meta?.longName || result.meta?.shortName
+      if (yahooName) {
+        await db.from('etf_holdings')
+          .update({ fund_name: yahooName, updated_at: new Date().toISOString() })
+          .eq('ticker', ticker)
+          .is('fund_name', null)
+      }
+
       await new Promise(r => setTimeout(r, 200)) // be polite to Yahoo
     } catch (yahooErr) {
       try {

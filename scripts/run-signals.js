@@ -435,6 +435,17 @@ async function main() {
     try {
       const { series, currency, name: yahooName } = await fetchHistory(ticker)
       const name = nicknameByTicker[ticker] || yahooName || null
+
+      // Backfill a missing holding nickname from Yahoo's own name for the
+      // security — covers tickers added manually without typing a name in.
+      if (yahooName && heldTickers.has(ticker)) {
+        const { error: nameErr } = await db.from('etf_holdings')
+          .update({ fund_name: yahooName, updated_at: new Date().toISOString() })
+          .eq('ticker', ticker)
+          .is('fund_name', null)
+        if (nameErr) console.warn(`  fund_name backfill failed for ${ticker}: ${nameErr.message}`)
+      }
+
       const ind = computeIndicators(series)
       const { stateKey, signal: rawSignal } = evaluate(ticker, assetLabel(ticker, name), ind, lastStates[ticker] ?? null, series)
       // A SELL/trim alert is meaningless for something not actually owned —

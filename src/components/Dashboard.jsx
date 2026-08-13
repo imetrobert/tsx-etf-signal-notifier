@@ -87,7 +87,14 @@ export default function Dashboard() {
       .from('etf_holdings')
       .upsert({ ticker: sym, shares: qty, account, institution, fund_name: fundName.trim() || null }, { onConflict: 'ticker,account,institution' })
     if (error) setError(error.message)
-    else { setTicker(''); setShares(''); setFundName(''); await load() }
+    else {
+      setTicker(''); setShares(''); setFundName('')
+      // Fetches the price and, when no name was typed in, backfills the
+      // fund's real name from Yahoo — so it shows up immediately instead of
+      // waiting for the next scheduled run.
+      try { await supabase.functions.invoke('refresh-prices') } catch { /* best-effort */ }
+      await load()
+    }
     setSaving(false)
   }
 
@@ -203,8 +210,9 @@ export default function Dashboard() {
             Plain tickers get the TSX suffix automatically (XEQT → XEQT.TO). Re-adding a
             ticker in the same account updates its share count. Signal advice assumes your
             TFSA and RRSP are maxed out (sell-to-buy in registered accounts). Fund name is
-            worth filling in for Manulife mutual funds — their tickers are cryptic codes,
-            and the name is used in the advisor email draft on the Signals tab.
+            looked up automatically if left blank — only fill it in to override that with
+            something else. It's used in the holdings table and the advisor email draft on
+            the Signals tab.
           </div>
           {error && <div className="err">{error}</div>}
         </div>
