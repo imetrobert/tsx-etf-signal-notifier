@@ -6,6 +6,7 @@ import Dashboard from './components/Dashboard'
 import Watchlist from './components/Watchlist'
 import SignalHistory from './components/SignalHistory'
 import ImportHoldings from './components/ImportHoldings'
+import Settings from './components/Settings'
 
 export default function App() {
   const [session, setSession] = useState(null)
@@ -57,6 +58,7 @@ export default function App() {
         <Route path="/watchlist" element={session ? <Watchlist session={session} /> : <Navigate to="/login" replace />} />
         <Route path="/signals" element={session ? <SignalHistory session={session} /> : <Navigate to="/login" replace />} />
         <Route path="/import" element={session ? <ImportHoldings session={session} /> : <Navigate to="/login" replace />} />
+        <Route path="/settings" element={session ? <Settings session={session} /> : <Navigate to="/login" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Router>
