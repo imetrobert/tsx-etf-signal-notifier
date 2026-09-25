@@ -518,8 +518,13 @@ async function main() {
     })
   }
 
-  if (fired.length || regimeChange) await sendEmail(fired, regime, regimeChange)
-  else console.log('No new signals today.')
+  const { data: settingsRow } = await db.from('etf_settings').select('email_alerts_enabled').eq('id', 1).maybeSingle()
+  const emailAlertsEnabled = settingsRow ? settingsRow.email_alerts_enabled !== false : true
+
+  if (fired.length || regimeChange) {
+    if (emailAlertsEnabled) await sendEmail(fired, regime, regimeChange)
+    else console.log(`Email alerts are turned off in Settings — ${fired.length} signal(s) recorded and market regime updated, but no email was sent.`)
+  } else console.log('No new signals today.')
 
   if (failures.length === tickers.length && tickers.length > 0) {
     throw new Error('Every ticker failed — check Yahoo availability or ticker symbols.')
