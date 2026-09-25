@@ -28,6 +28,7 @@ export default function Navbar({ subtitle, onRefresh, refreshing }) {
         <NavLink to="/watchlist" className={({ isActive }) => isActive ? 'active' : ''}>Watchlist</NavLink>
         <NavLink to="/signals" className={({ isActive }) => isActive ? 'active' : ''}>Signals</NavLink>
         <NavLink to="/import" className={({ isActive }) => isActive ? 'active' : ''}>Import</NavLink>
+        <NavLink to="/settings" className={({ isActive }) => isActive ? 'active' : ''}>Settings</NavLink>
       </nav>
     </>
   )
