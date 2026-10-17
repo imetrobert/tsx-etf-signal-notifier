@@ -76,8 +76,8 @@ export function searchableFundName(name) {
 
 // ---------- diffing against stored holdings ----------
 
-// Compares one statement account against the app's Manulife holdings for the
-// same account. `holdings` are rows from etf_holdings; `fundMap` maps a
+// Compares one statement account against the app's holdings (for that one
+// institution) in the same account. `holdings` are rows from etf_holdings; `fundMap` maps a
 // normalized statement name to { ticker, fund_name }.
 //
 // Returns one row per fund with an action: add (new or switched into), adjust
@@ -107,11 +107,12 @@ export function diffPositions(positions, holdings, fundMap = {}) {
       key: norm,
       statementName: p.name,
       // The load type ("-NL") is how the fund was bought, not part of its name.
-      nickname: holding?.fund_name || mapped?.fund_name || searchableFundName(p.name),
+      nickname: holding?.fund_name || mapped?.fund_name || p.nickname || searchableFundName(p.name),
       ticker,
       quantity: p.quantity,
       unitPrice: p.unitPrice,
       marketValue: p.marketValue,
+      currency: p.currency || null,
       holding,
       previousShares: holding ? Number(holding.shares) : null,
       action: !holding ? 'add' : sameUnits ? 'none' : 'adjust',
