@@ -13,6 +13,11 @@ const ACCOUNTS = [
 ]
 const acctLabel = code => ACCOUNTS.find(a => a.code === code)?.label ?? code
 
+const INSTITUTION_LABEL = { MANULIFE: 'Manulife', WEALTHSIMPLE: 'Wealthsimple' }
+const instName = code => INSTITUTION_LABEL[code] ?? code
+// Holdings saved before the institution column existed default to Wealthsimple.
+const heldAt = h => h.institution || 'WEALTHSIMPLE'
+
 const ACTION_LABEL = { add: 'Add', adjust: 'Adjust', remove: 'Remove', none: 'Unchanged' }
 const ACTION_TAG = { add: 'buy', adjust: 'watch', remove: 'sell', none: 'hold' }
 
@@ -31,11 +36,11 @@ const fmtImportDate = iso => iso
 // export can hold several that land in the same one — a CAD and a USD cash
 // account are both non-registered. Left separate, each would see the other's
 // funds as missing and propose removing them.
-function buildSections(accounts, holdings, fundMap) {
+function buildSections(accounts, holdings, fundMap, institution) {
   const groups = new Map()
   for (const acct of accounts) {
     const key = acct.accountType || `unknown:${acct.accountNumber}`
-    const group = groups.get(key) || { key, accountType: acct.accountType || '', sources: [], positions: [] }
+    const group = groups.get(key) || { key, institution, accountType: acct.accountType || '', sources: [], positions: [] }
     group.sources.push({
       number: acct.accountNumber,
       label: acct.accountLabel,
@@ -50,7 +55,7 @@ function buildSections(accounts, holdings, fundMap) {
         existing.quantity += p.quantity
         existing.marketValue += p.marketValue || 0
       } else {
-        group.positions.push({ ...p, currency: acct.currency || 'CAD' })
+        group.positions.push({ ...p, currency: p.currency || acct.currency || 'CAD' })
       }
     }
     groups.set(key, group)
@@ -58,10 +63,12 @@ function buildSections(accounts, holdings, fundMap) {
   return [...groups.values()].map(g => sectionRows(g, holdings, fundMap))
 }
 
-// Builds (or rebuilds) a section's diff against the holdings of its app account.
+// Builds (or rebuilds) a section's diff against the holdings of its app account
+// at the institution the export came from — the other institution's holdings
+// are never compared, so they can't be proposed for removal.
 function sectionRows(group, holdings, fundMap, previousRows) {
   const mine = group.accountType
-    ? holdings.filter(h => (h.account || 'NON_REG') === group.accountType)
+    ? holdings.filter(h => heldAt(h) === group.institution && (h.account || 'NON_REG') === group.accountType)
     : []
   const edited = new Map((previousRows || []).map(r => [r.key, r]))
   const totals = {}
@@ -95,6 +102,7 @@ export default function ImportHoldings() {
   const [parsing, setParsing] = useState(false)
   const [fileName, setFileName] = useState('')
   const [statementDate, setStatementDate] = useState(null)
+  const [institution, setInstitution] = useState(null)
   const [warnings, setWarnings] = useState([])
   const [lookups, setLookups] = useState({})
   const [pasted, setPasted] = useState('')
@@ -105,7 +113,7 @@ export default function ImportHoldings() {
   const load = useCallback(async () => {
     setError('')
     const [h, m, i] = await Promise.all([
-      supabase.from('etf_holdings').select('*').eq('institution', 'MANULIFE'),
+      supabase.from('etf_holdings').select('*'),
       supabase.from('etf_fund_map').select('*'),
       supabase.from('etf_statement_imports').select('*').order('created_at', { ascending: false }).limit(20),
     ])
@@ -128,12 +136,14 @@ export default function ImportHoldings() {
     setResult(null)
     setSections([])
     setWarnings([])
+    setInstitution(null)
     setFileName(name)
     try {
       const parsed = parseHoldingsExport(text)
       setStatementDate(parsed.statementDate)
+      setInstitution(parsed.institution)
       setWarnings(parsed.warnings)
-      setSections(buildSections(parsed.accounts, holdings, fundMap))
+      setSections(buildSections(parsed.accounts, holdings, fundMap, parsed.institution))
     } catch (err) {
       setError(`Couldn't read that export: ${err.message}`)
       setSections([])
@@ -202,24 +212,32 @@ export default function ImportHoldings() {
     .filter((t, i, all) => t && all.indexOf(t) !== i)
     .map(acctLabel)
 
+  // Statement dates only compare within one institution: a Wealthsimple
+  // import says nothing about how fresh the Manulife holdings are. Before an
+  // export has been read, show everything.
+  const scoped = institution
+    ? imports.filter(i => (i.institution || 'MANULIFE') === institution)
+    : imports
+
   const alreadyImported = statementDate
-    ? imports.filter(i => i.statement_date === statementDate &&
+    ? scoped.filter(i => i.statement_date === statementDate &&
         sections.some(s => s.sources.some(src => (i.account_number || '').includes(src.number))))
     : []
 
   // Most recent import run, and the newest statement any import has covered —
   // they differ when an older statement is imported after a newer one.
-  const lastImport = imports[0] || null
-  const lastStatementDate = imports.reduce(
+  const lastImport = scoped[0] || null
+  const lastStatementDate = scoped.reduce(
     (latest, i) => (i.statement_date && (!latest || i.statement_date > latest) ? i.statement_date : latest), null)
 
   // Same pair per account, so it's obvious which account is a month behind.
-  const perAccount = Object.values(imports.reduce((acc, i) => {
-    const key = i.account_number || i.account_type || '—'
+  const perAccount = Object.values(scoped.reduce((acc, i) => {
+    const key = `${i.institution || 'MANULIFE'}:${i.account_number || i.account_type || '—'}`
     const seen = acc[key]
     acc[key] = {
       key,
       accountType: seen?.accountType || i.account_type,
+      institution: seen?.institution || i.institution || 'MANULIFE',
       statementDate: !seen || (i.statement_date || '') > (seen.statementDate || '') ? i.statement_date : seen.statementDate,
       importedAt: seen?.importedAt || i.created_at, // imports arrive newest first
     }
@@ -243,7 +261,12 @@ export default function ImportHoldings() {
       const applied = []
       for (const row of section.rows) {
         if (!row.include || row.action === 'none') continue
-        const ticker = normalizeTicker(row.ticker)
+        // Wealthsimple tickers come from the export already in Yahoo form
+        // (US listings are bare, so adding .TO would break them); only one
+        // typed by hand needs normalizing. Manulife behaves as before.
+        const ticker = section.institution === 'WEALTHSIMPLE' && !row.tickerEdited
+          ? row.ticker.trim().toUpperCase()
+          : normalizeTicker(row.ticker)
         const nickname = row.nickname.trim() || null
         try {
           if (row.action === 'remove') {
@@ -260,7 +283,7 @@ export default function ImportHoldings() {
             if (!ticker) throw new Error('no ticker')
             const { error } = await supabase.from('etf_holdings').upsert({
               ticker, shares: row.quantity, account: section.accountType,
-              institution: 'MANULIFE', fund_name: nickname,
+              institution: section.institution, fund_name: nickname,
             }, { onConflict: 'ticker,account,institution' })
             if (error) throw error
             done.added++
@@ -270,9 +293,10 @@ export default function ImportHoldings() {
           problems.push(`${row.statementName}: ${err.message}`)
           continue
         }
-        // Remembering the name → ticker link only saves typing next month, so
+        // Remembering the name → ticker link (a Manulife thing: Wealthsimple states
+        // the ticker outright) only saves typing next month, so
         // a missing etf_fund_map table must not fail an otherwise good import.
-        if (ticker && row.action !== 'remove') {
+        if (section.institution === 'MANULIFE' && ticker && row.action !== 'remove') {
           const { error } = await supabase.from('etf_fund_map').upsert({
             norm_name: normalizeFundName(row.statementName),
             statement_name: row.statementName,
@@ -286,7 +310,7 @@ export default function ImportHoldings() {
           statement_date: statementDate,
           account_number: section.sources.map(s => s.number).join(', '),
           account_type: section.accountType,
-          institution: 'MANULIFE',
+          institution: section.institution,
           file_name: fileName,
           summary: { applied, accounts: section.sources },
         })
@@ -302,19 +326,21 @@ export default function ImportHoldings() {
 
   return (
     <>
-      <Navbar subtitle="Import your Manulife holdings export" />
+      <Navbar subtitle="Import your Manulife or Wealthsimple holdings export" />
       <main>
         <div className="card">
           <h2>Import holdings</h2>
           <p className="muted">
-            On the Manulife Wealth site, open <strong>Holdings</strong> and press{' '}
-            <strong>Export</strong>. Paste it below, or attach the downloaded
-            file. It's read on this device — nothing is uploaded — and every
-            change is listed for you to approve before anything is saved. Once
-            applied, the export becomes your Manulife holdings for the accounts
-            it covers: units are set to its numbers and funds it no longer lists
-            are removed. Wealthsimple holdings, and accounts absent from the
-            export, are never touched.
+            Paste a holdings export below, or attach the downloaded file —
+            Manulife and Wealthsimple exports are both recognized from their
+            header row. On the Manulife Wealth site, open{' '}
+            <strong>Holdings</strong> and press <strong>Export</strong>. It's
+            read on this device — nothing is uploaded — and every change is
+            listed for you to approve before anything is saved. Once applied,
+            the export becomes your holdings <em>at that institution</em> for
+            the accounts it covers: units are set to its numbers and funds it
+            no longer lists are removed. The other institution's holdings, and
+            accounts absent from the export, are never touched.
           </p>
           <div className="form-row" style={{ marginTop: 12 }}>
             <div>
@@ -334,7 +360,7 @@ export default function ImportHoldings() {
             <div style={{ marginTop: 8 }}>
               {perAccount.map(a => (
                 <div key={a.key} className="signal-meta">
-                  {a.accountType ? acctLabel(a.accountType) : a.key}: holdings as of{' '}
+                  {institution ? '' : `${instName(a.institution)} `}{a.accountType ? acctLabel(a.accountType) : a.key.split(':')[1]}: holdings as of{' '}
                   {fmtStatementDate(a.statementDate)}, imported {fmtImportDate(a.importedAt)}
                 </div>
               ))}
@@ -346,7 +372,7 @@ export default function ImportHoldings() {
               rows={4}
               value={pasted}
               onChange={e => setPasted(e.target.value)}
-              placeholder="Security	Security Symbol	Market	Asset Class	Account Number	…"
+              placeholder="Security	Security Symbol	Market	…   or   Account Name	Account Type	…"
               style={{ width: '100%', fontFamily: 'var(--mono)', fontSize: 11 }}
             />
             <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
@@ -360,9 +386,9 @@ export default function ImportHoldings() {
               )}
             </div>
             <div className="muted" style={{ marginTop: 6 }}>
-              Include the header row that starts “Security”. The export carries
-              the ticker and account for every position, so no ticker lookups
-              are needed.
+              Include the header row (it starts “Security” for Manulife,
+              “Account Name” for Wealthsimple). Both exports carry the ticker
+              and account for every position, so no ticker lookups are needed.
             </div>
           </div>
           <div style={{ marginTop: 12 }}>
@@ -386,7 +412,7 @@ export default function ImportHoldings() {
           )}
           {sections.length > 0 && statementDate && (
             <div className="signal-reasons" style={{ marginTop: 10 }}>
-              Holdings as of <strong>{fmtStatementDate(statementDate)}</strong>.
+              {instName(institution)} holdings as of <strong>{fmtStatementDate(statementDate)}</strong>.
             </div>
           )}
           {alreadyImported.length > 0 && (
@@ -399,7 +425,7 @@ export default function ImportHoldings() {
           {staleStatement && (
             <div className="notice" style={{ marginTop: 10 }}>
               This export is older than the one you already imported
-              ({fmtStatementDate(staleStatement)}). Applying it would roll your Manulife
+              ({fmtStatementDate(staleStatement)}). Applying it would roll your {instName(institution)}
               holdings back to {fmtStatementDate(statementDate)}.
             </div>
           )}
@@ -436,7 +462,7 @@ export default function ImportHoldings() {
           return (
             <div className="card" key={section.key}>
               <h2>
-                {section.sources.map(s => [s.label, s.number].filter(Boolean).join(' ')).join(' + ')}
+                {instName(section.institution)}: {section.sources.map(s => [s.label, s.number].filter(Boolean).join(' ')).join(' + ')}
               </h2>
               <div className="form-row" style={{ marginBottom: 10 }}>
                 <div>
@@ -525,7 +551,10 @@ export default function ImportHoldings() {
                                 fmtUnits(row.quantity)
                               )}
                               {row.marketValue != null && (
-                                <><br /><span className="muted">{fmtCad.format(row.marketValue)}</span></>
+                                <><br /><span className="muted">
+                                  {fmtCad.format(row.marketValue)}
+                                  {row.currency && row.currency !== 'CAD' ? ` ${row.currency}` : ''}
+                                </span></>
                               )}
                             </td>
                             <td>
@@ -623,7 +652,7 @@ export default function ImportHoldings() {
             </button>
             <div className="muted" style={{ marginTop: 6 }}>
               Nothing has been saved yet. Applying makes this export your
-              Manulife holdings for the account{sections.length > 1 ? 's' : ''} above —
+              {instName(institution)} holdings for the account{sections.length > 1 ? 's' : ''} above —
               units set to its values, checked funds removed — and remembers each
               ticker you entered for next month.
             </div>
@@ -635,7 +664,7 @@ export default function ImportHoldings() {
             <h2>Previous imports</h2>
             {imports.map(i => (
               <div key={i.id} className="signal-meta">
-                Statement {fmtStatementDate(i.statement_date)} ·{' '}
+                {instName(i.institution || 'MANULIFE')} · Statement {fmtStatementDate(i.statement_date)} ·{' '}
                 {i.account_type ? acctLabel(i.account_type) : i.account_number} ·{' '}
                 {(i.summary?.applied || []).length} change(s) · imported{' '}
                 {fmtImportDate(i.created_at)}
