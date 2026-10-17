@@ -9,7 +9,7 @@
 import {
   diffPositions, normalizeFundName, prettifyFundName, searchableFundName,
 } from '../src/lib/funds.js'
-import { parseHoldingsExport, toYahooSymbol } from '../src/lib/holdingsExport.js'
+import { parseHoldingsExport, toYahooSymbol, detectInstitution } from '../src/lib/holdingsExport.js'
 
 let failures = 0
 function check(name, actual, expected) {
@@ -62,6 +62,9 @@ console.log('\naccount holdings export')
   check('TSX gets .TO', toYahooSymbol('VVL', 'TSX'), 'VVL.TO')
   check('class shares use a dash', toYahooSymbol('DGR.B', 'TSX'), 'DGR-B.TO')
   check('TSX Venture gets .V', toYahooSymbol('GDNP', 'TSXV'), 'GDNP.V')
+  check('TSX-V spelled with a dash gets .V', toYahooSymbol('XBOT', 'TSX-V'), 'XBOT.V')
+  check('a US listing stays bare', toYahooSymbol('ROK', 'NYSE'), 'ROK')
+  check('a US class share uses a dash', toYahooSymbol('BRK.B', 'NYSE'), 'BRK-B')
   check('Cboe Canada gets .NE', toYahooSymbol('FBAL', 'NEO'), 'FBAL.NE')
   check('a FundSERV code is left alone', toYahooSymbol('FID5494', 'OTC'), 'FID5494')
   check('an exchange already present is kept', toYahooSymbol('VVL.TO', 'TSX'), 'VVL.TO')
@@ -89,6 +92,85 @@ console.log('\naccount holdings export')
 
   check('a file that is not an export says so',
     /doesn't look like a holdings export/.test(parseHoldingsExport('a,b,c\n1,2,3').warnings[0]), true)
+}
+
+console.log('\nWealthsimple export')
+{
+  const H = 'Account Name\tAccount Type\tAccount Classification\tAccount Number\tSymbol\tExchange\tMIC\tName\tSecurity Type\tQuantity\tPosition Direction\tMarket Price\tMarket Price Currency\tBook Value (CAD)\tBook Value Currency (CAD)\tBook Value (Market)\tBook Value Currency (Market)\tMarket Value\tMarket Value Currency\tMarket Unrealized Returns\tMarket Unrealized Returns Currency'
+  const line = (acct, type, num, sym, exch, mic, name, sec, qty, dir, price, cur, mv) =>
+    [acct, type, 'Trade', num, sym, exch, mic, name, sec, qty, dir, price, cur, '100', 'CAD', '100', cur, mv, cur, '0', cur].join('\t')
+  const tsv = [
+    H,
+    line('Crypto', 'Crypto', 'HQ1AAAA11CAD, X10BBBB12CAD', 'BTC', '', '', 'Bitcoin', 'CRYPTOCURRENCY', '0.01077936', 'LONG', '115153.66', 'CAD', '1242.848209127'),
+    line('Crypto', 'Crypto', 'HQ1AAAA11CAD, X10BBBB12CAD', 'CAD', '', '', 'CAD', 'CURRENCY', '3.34', 'LONG', '1', 'CAD', '3.34'),
+    line('Non-registered', 'Non-registered', 'HQ4CCCC00CAD', 'FTS.TO', 'TSX', 'XTSE', 'Fortis Inc.', 'EQUITY', '1.0673', 'LONG', '78.81', 'CAD', '84.113913'),
+    line('Non-registered', 'Non-registered', 'HQ4CCCC00CAD', 'HXQ', 'TSX', 'XTSE', 'Global X Nasdaq-100 Index Corporate Class ETF', 'EXCHANGE_TRADED_FUND', '124.3021', 'LONG', '118.82', 'CAD', '14769.575522'),
+    line('Non-registered', 'Non-registered', 'HQ4CCCC00CAD', 'TTWO', 'NASDAQ', 'XNAS', 'Take-Two Interactive Software Inc.', 'EQUITY', '1', 'LONG', '205.16', 'USD', '205.16'),
+    line('Non-registered', 'Non-registered', 'WZ0DDDD804CAD', 'CAD', '', '', 'CAD', 'CURRENCY', '11.26', 'LONG', '1', 'CAD', '11.26'),
+    line('RRSP', 'RRSP', 'HQ88EEEE43CAD', 'ROK', 'NYSE', 'XNYS', 'Rockwell Automation Inc.', 'EQUITY', '20.0126', 'LONG', '426.23', 'USD', '8529.970498'),
+    line('RRSP', 'RRSP', 'HQ88EEEE43CAD', 'USD', '', '', 'USD', 'CURRENCY', '0.02', 'LONG', '1', 'USD', '0.02'),
+    line('RRSP', 'RRSP', 'HQ88EEEE43CAD', 'XEQT', 'TSX', 'XTSE', 'iShares Core Equity ETF Portfolio', 'EXCHANGE_TRADED_FUND', '98.8137', 'LONG', '45.46', 'CAD', '4492.070802'),
+    line('TFSA', 'TFSA', 'HD26FFFF3CAD', 'XBOT', 'TSX-V', 'XTSX', 'Realbotix Corp', 'EQUITY', '3396.6296', 'LONG', '0.245', 'CAD', '832.174252'),
+    line('TFSA', 'TFSA', 'HD26FFFF3CAD', 'CAD', '', '', 'CAD', 'CURRENCY', '0.02', 'LONG', '1', 'CAD', '0.02'),
+  ].join('\n')
+
+  const r = parseHoldingsExport(tsv)
+  const byNumber = n => r.accounts.find(a => a.accountNumber === n)
+  const pos = (n, sym) => byNumber(n).positions.find(p => p.ticker === sym)
+
+  check('recognized as Wealthsimple', r.institution, 'WEALTHSIMPLE')
+  check('accounts in order; crypto and cash-only accounts are gone', r.accounts.map(a => a.accountNumber),
+    ['HQ4CCCC00CAD', 'HQ88EEEE43CAD', 'HD26FFFF3CAD'])
+  check('account types', r.accounts.map(a => a.accountType), ['NON_REG', 'RRSP', 'TFSA'])
+  check('cash (CURRENCY) rows are skipped', r.accounts.every(a => a.positions.every(p => p.name !== 'CAD' && p.name !== 'USD')), true)
+  check('TSX symbol with no suffix gets .TO', pos('HQ4CCCC00CAD', 'HXQ.TO')?.quantity, 124.3021)
+  check('a symbol already carrying .TO is kept', !!pos('HQ4CCCC00CAD', 'FTS.TO'), true)
+  check('TSX-V gets .V', !!pos('HD26FFFF3CAD', 'XBOT.V'), true)
+  check('US listings stay bare', [!!pos('HQ4CCCC00CAD', 'TTWO'), !!pos('HQ88EEEE43CAD', 'ROK')], [true, true])
+  check('fractional units are kept exactly', pos('HQ88EEEE43CAD', 'XEQT.TO').quantity, 98.8137)
+  check('whole position shape (CAD)', pos('HQ88EEEE43CAD', 'XEQT.TO'), {
+    name: 'iShares Core Equity ETF Portfolio', quantity: 98.8137, unitPrice: 45.46,
+    marketValue: 4492.07, ticker: 'XEQT.TO', nickname: 'iShares Core Equity ETF Portfolio', currency: 'CAD',
+  })
+  check('a USD position carries its own currency', pos('HQ88EEEE43CAD', 'ROK').currency, 'USD')
+  check('the account itself stays CAD', byNumber('HQ88EEEE43CAD').currency, 'CAD')
+  check('crypto skip is explained', r.warnings.some(w => /crypto/i.test(w)), true)
+  check('cash skip is explained', r.warnings.some(w => /cash/i.test(w)), true)
+  check('USD is flagged', r.warnings.some(w => /USD/.test(w)), true)
+
+  // The MIC stands in when the exchange column is blank.
+  const noExch = [H, line('TFSA', 'TFSA', 'HD1', 'XIC', '', 'XTSE', 'iShares Core S&P/TSX', 'EXCHANGE_TRADED_FUND', '10', 'LONG', '30', 'CAD', '300')].join('\n')
+  check('MIC fills in for a blank exchange', parseHoldingsExport(noExch).accounts[0].positions[0].ticker, 'XIC.TO')
+
+  // FHSA and RESP aren't tracked; a short position isn't a holding.
+  const odd = [
+    H,
+    line('FHSA', 'FHSA', 'HF1', 'XEQT', 'TSX', 'XTSE', 'iShares Core Equity ETF Portfolio', 'EXCHANGE_TRADED_FUND', '10', 'LONG', '30', 'CAD', '300'),
+    line('TFSA', 'TFSA', 'HD1', 'ZUT', 'TSX', 'XTSE', 'BMO Equal Weight Utils', 'EXCHANGE_TRADED_FUND', '5', 'SHORT', '28', 'CAD', '140'),
+    line('TFSA', 'TFSA', 'HD1', 'VCN', 'TSX', 'XTSE', 'Vanguard FTSE Canada', 'EXCHANGE_TRADED_FUND', '7', 'LONG', '40', 'CAD', '280'),
+  ].join('\n')
+  const oddR = parseHoldingsExport(odd)
+  check('FHSA is skipped', oddR.accounts.map(a => a.accountNumber), ['HD1'])
+  check('a short position is skipped, not imported long', oddR.accounts[0].positions.map(p => p.ticker), ['VCN.TO'])
+  check('and both are explained', oddR.warnings.length, 2)
+
+  // A row that doesn't line up is skipped loudly here too.
+  const ragged = [H, 'x\tRRSP\tTrade\tHQ1\tXIC\tTSX\tXTSE\tBroken ETF\tEXCHANGE_TRADED_FUND\t10'].join('\n')
+  check('a short row is reported', /columns don't line up/.test(parseHoldingsExport(ragged).warnings.join(' ')), true)
+
+  // Both formats still tell each other apart.
+  check('Manulife header still Manulife',
+    detectInstitution(['Security', 'Security Symbol', 'Market', 'Account Type', 'Quantity']), 'MANULIFE')
+  check('unknown header is nothing', detectInstitution(['a', 'b']), null)
+
+  // The nickname is used as is; Manulife's abbreviation expander would mangle "S&P/TSX".
+  const diffRows = diffPositions([pos('HQ88EEEE43CAD', 'XEQT.TO')], [], {})
+  check('Wealthsimple nickname is the name as given', diffRows[0].nickname, 'iShares Core Equity ETF Portfolio')
+  check('the row carries the currency', diffRows[0].currency, 'CAD')
+  check('an existing holding with that ticker is matched', diffPositions(
+    [pos('HQ88EEEE43CAD', 'XEQT.TO')],
+    [{ id: 'h1', ticker: 'XEQT.TO', shares: 98.8137, fund_name: null, account: 'RRSP' }], {},
+  )[0].action, 'none')
 }
 
 console.log('\ndiff against stored holdings')
