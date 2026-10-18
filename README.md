@@ -90,6 +90,39 @@ month-end, so no ticker research is needed. It is read on the device —
 nothing is uploaded — and nothing is written until the listed changes are
 approved.
 
+**Cost basis (ACB) and gain/loss**: each holding can carry a cost
+(`book_cost` on `etf_holdings`, in the security's own currency), and the
+Dashboard shows ACB and gain/loss per holding plus totals for non-registered
+vs registered accounts. Where the cost comes from:
+
+- **Wealthsimple**: the export's *Book Value (Market)* column, refreshed on
+  every import (`cost_source = 'export'`).
+- **Manulife**: its export has no cost, so a new asset is flagged *needs cost*
+  and the Import tab asks you to attach a Manulife *Statement of Account* PDF.
+  The Cost column ("book cost") is read on the device with pdf.js — nothing is
+  uploaded — and matched by account and fund name (`'statement'`). Attaching a
+  newer statement later trues everything up.
+- **Between statements**: a sale trims the cost in proportion (average-cost
+  method, exact). Units added since — reinvested distributions, purchases —
+  are costed at the price on the import (`'estimated'`, shown as `~`), which a
+  statement then corrects.
+
+Gains inside an RRSP/TFSA are performance only, not taxable. USD-priced
+holdings are shown in USD on their own row and left out of the CAD totals.
+
+**Retirement planner export**: the Dashboard's *Send to retirement planner*
+card builds a JSON snapshot (`src/lib/plannerExport.js`) for the companion
+retirement planner: today's market value for RRSP, TFSA, LIRA and
+non-registered, plus the non-registered unrealized gain as a % of value,
+(market value − ACB) / market value, which is what the planner turns back into
+a cost base to tax withdrawals. Copy it (or download the .json) and paste it
+into the planner's *Import my real portfolio* card. Notes: US-listed holdings
+are converted at a USD→CAD rate you set on that card; a US holding's tax cost
+is its CAD book value (`book_cost_cad`), not the USD one; cash, crypto, FTQ and
+RESP/FHSA aren't tracked, so account totals can run a little under the real
+ones; and a net loss exports as 0% gains because the planner has no field for
+a loss. "Locked-in RRSP" accounts are LIRA, not RRSP.
+
 The review shows a per-fund diff: **add** for funds that appeared, **adjust**
 where the unit count moved, **remove** for funds on file but absent from the
 export, and unchanged funds for completeness. Each row has a checkbox, so a
