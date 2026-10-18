@@ -19,6 +19,24 @@ create table if not exists etf_holdings (
 );
 alter table etf_holdings add column if not exists fund_name text;
 
+-- Cost basis (ACB / book cost) for gain-and-loss tracking. book_cost is the
+-- total for the whole position, in the security's own trading currency.
+-- cost_source says how trustworthy it is: 'statement' (a Manulife statement's
+-- Cost column), 'export' (Wealthsimple's book value) or 'estimated' (rolled
+-- forward from a known cost after units were added). Existing table, so the
+-- grants and RLS policy already cover the new columns.
+alter table etf_holdings add column if not exists book_cost numeric;
+alter table etf_holdings add column if not exists book_cost_date date;
+alter table etf_holdings add column if not exists cost_source text;
+-- The same cost in Canadian dollars — the figure tax is worked out on. For a
+-- CAD holding it equals book_cost; for a US-listed one it differs by the
+-- exchange rate at purchase.
+alter table etf_holdings add column if not exists book_cost_cad numeric;
+do $$ begin
+  alter table etf_holdings add constraint etf_holdings_cost_source_chk
+    check (cost_source in ('statement','export','estimated'));
+exception when duplicate_object then null; end $$;
+
 -- Migration for installs created before per-account / per-institution
 -- holdings existed: add the columns, move uniqueness to
 -- (ticker, account, institution), and add the signal advice column.
