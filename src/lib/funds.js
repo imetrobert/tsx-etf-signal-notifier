@@ -113,6 +113,8 @@ export function diffPositions(positions, holdings, fundMap = {}) {
       unitPrice: p.unitPrice,
       marketValue: p.marketValue,
       currency: p.currency || null,
+      cost: p.cost ?? null,
+      costCad: p.costCad ?? null,
       holding,
       previousShares: holding ? Number(holding.shares) : null,
       action: !holding ? 'add' : sameUnits ? 'none' : 'adjust',
@@ -137,4 +139,53 @@ export function diffPositions(positions, holdings, fundMap = {}) {
   }
 
   return rows
+}
+
+
+// ---------- cost basis (ACB) ----------
+
+const round2 = n => Math.round(n * 100) / 100
+
+// A known cost, carried from one unit count to another.
+//  - Fewer units (a sale): cost leaves in proportion — the average-cost method,
+//    which is how ACB works — so the result is exact.
+//  - More units (a purchase or reinvested distribution): the new units are
+//    costed at today's price. A reinvested distribution really is bought at the
+//    going price, so that is close; a statement corrects it exactly.
+export function rollForwardCost({ cost, units, toUnits, price }) {
+  if (cost == null || !(units > 0)) return null
+  if (Math.abs(toUnits - units) < 1e-4) return { cost, estimated: false }
+  if (toUnits < units) return { cost: round2(cost * toUnits / units), estimated: false }
+  if (price == null) return null
+  return { cost: round2(cost + (toUnits - units) * price), estimated: true }
+}
+
+// What cost to record for one reviewed row, or null to leave it as it is.
+//  statement: (row) => { cost, quantity, date } | null — a statement's line for it.
+// Returns { cost, costCad, source, date } — source is 'export' | 'statement' |
+// 'estimated'. cost is in the security's own currency; costCad is what it cost
+// in dollars, which is the tax figure (a Manulife holding is always CAD, so the
+// two are the same).
+export function planCost(row, { institution, statement, today }) {
+  if (row.action === 'remove') return null
+  // Wealthsimple states its book value on every export, so it is always current.
+  if (institution === 'WEALTHSIMPLE') {
+    return row.cost != null
+      ? { cost: row.cost, costCad: row.costCad ?? (!row.currency || row.currency === 'CAD' ? row.cost : null), source: 'export', date: today }
+      : null
+  }
+  const line = statement ? statement(row) : null
+  if (line) {
+    const r = rollForwardCost({ cost: line.cost, units: line.quantity, toUnits: row.quantity, price: row.unitPrice })
+    if (r) return { cost: r.cost, costCad: r.cost, source: r.estimated ? 'estimated' : 'statement', date: line.date }
+  }
+  const h = row.holding
+  if (h?.book_cost != null) {
+    const r = rollForwardCost({ cost: Number(h.book_cost), units: Number(h.shares), toUnits: row.quantity, price: row.unitPrice })
+    if (!r) return null
+    // Unchanged units: nothing to record.
+    if (Math.abs(r.cost - Number(h.book_cost)) < 0.005 && !r.estimated) return null
+    return { cost: r.cost, costCad: r.cost, source: r.estimated ? 'estimated' : (h.cost_source || 'statement'), date: h.book_cost_date || today }
+  }
+  return null
 }

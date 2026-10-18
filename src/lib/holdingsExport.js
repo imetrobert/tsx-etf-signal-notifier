@@ -25,10 +25,12 @@ import { normalizeFundName } from './funds.js'
 // Account Type as the export words it → the account types this app tracks.
 const ACCOUNT_TYPES = [
   [/TAX ?FREE|TFSA/i, 'TFSA'],
-  [/LOCKED ?IN|LIRA|LRSP|\bLIF\b/i, 'LIRA'],
+  [/LOCKED[ -]?IN|LIRA|LRSP|\bR?LIF\b/i, 'LIRA'],
   [/RRSP|RRIF|RSP/i, 'RRSP'],
   [/CASH|MARGIN|NON-?REG|INVESTMENT/i, 'NON_REG'],
 ]
+export const accountTypeFor = text => ACCOUNT_TYPES.find(([re]) => re.test(text || ''))?.[1] || null
+
 // Recognized but not tracked: contribution and withdrawal rules differ enough
 // that the account-aware advice would be wrong for them.
 const UNTRACKED = /RESP|RDSP|FHSA|CRYPTO|EDUCATION|DISABILITY/i
@@ -138,6 +140,12 @@ const WEALTHSIMPLE_HEADERS = {
   price: /^market price$/i,
   currency: /^market price currency$/i,
   totalValue: /^market value$/i,
+  // Book value in the same currency the position is priced in, so a USD
+  // stock's cost sits beside its USD value.
+  bookValue: /^book value \(market\)$/i,
+  // What the position cost in dollars: the figure that matters for tax, since
+  // a US stock's gain in CAD includes the currency move.
+  bookValueCad: /^book value \(cad\)$/i,
 }
 
 // Which institution wrote this export, from its header row.
@@ -211,7 +219,7 @@ export function parseHoldingsExport(text) {
     } else if (CASH_ROW.test(name)) { skippedCash++; continue }
     if (UNTRACKED.test(accountTypeText)) { skippedAccounts.add(accountTypeText); continue }
 
-    const accountType = ACCOUNT_TYPES.find(([re]) => re.test(accountTypeText))?.[1] || null
+    const accountType = accountTypeFor(accountTypeText)
     const number = (row[col.accountNumber] ?? '').trim() || accountTypeText
     if (!accounts.has(number)) {
       accounts.set(number, {
@@ -244,12 +252,18 @@ export function parseHoldingsExport(text) {
       // unlike Manulife's abbreviations, so it is used as the nickname as is.
       position.nickname = name
       position.currency = (row[col.currency] ?? '').trim() || 'CAD'
+      const book = col.bookValue != null ? num(row[col.bookValue]) : null
+      if (book != null) position.cost = round2(book)
+      const bookCad = col.bookValueCad != null ? num(row[col.bookValueCad]) : null
+      if (bookCad != null) position.costCad = round2(bookCad)
     }
     // One row per security per account, but a fund can appear twice if the
     // export splits a position; combine rather than showing it twice.
     const existing = account.positions.find(p => normalizeFundName(p.name) === normalizeFundName(name))
     if (existing) {
       existing.quantity += quantity
+      if (existing.cost != null && position.cost != null) existing.cost = round2(existing.cost + position.cost)
+      if (existing.costCad != null && position.costCad != null) existing.costCad = round2(existing.costCad + position.costCad)
       if (existing.marketValue != null && position.marketValue != null) existing.marketValue += position.marketValue
     } else {
       account.positions.push(position)
