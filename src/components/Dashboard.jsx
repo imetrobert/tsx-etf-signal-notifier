@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { normalizeTicker, displayTicker, fmtCad } from '../lib/tickers'
+import { buildPlannerExport } from '../lib/plannerExport'
 import Navbar from './Navbar'
 
 const ACCOUNTS = [
@@ -126,17 +127,87 @@ export default function Dashboard() {
     // get a current price but no historical NAV, so ma200 stays null forever
     // — that's the signal a holding can price but can't generate BUY/SELL alerts.
     const priceOnly = p?.price != null && p?.ma200 == null
-    return { ...h, price: p?.price ?? null, priceDate: p?.price_date ?? null, value: p?.price != null ? p.price * h.shares : null, priceOnly }
+    const value = p?.price != null ? p.price * h.shares : null
+    // Cost (ACB) is stored in the security's own currency, like its price, so
+    // the gain is always like-for-like.
+    const cost = h.book_cost != null ? Number(h.book_cost) : null
+    return {
+      ...h, price: p?.price ?? null, priceDate: p?.price_date ?? null, value, priceOnly,
+      currency: p?.currency || 'CAD', cost, gain: value != null && cost != null ? value - cost : null,
+    }
   })
   const shownRows = rows.filter(r =>
     (acctFilter === 'ALL' || r.account === acctFilter) &&
     (instFilter === 'ALL' || r.institution === instFilter)
   )
-  const total = shownRows.reduce((s, r) => s + (r.value ?? 0), 0)
+  // Totals are in CAD. A USD-priced holding (a US listing) is shown in USD on
+  // its own row and left out of them rather than added in as if it were CAD.
+  const isCad = r => r.currency === 'CAD'
+  const usdCount = shownRows.filter(r => r.value != null && !isCad(r)).length
+  const total = shownRows.filter(isCad).reduce((s, r) => s + (r.value ?? 0), 0)
   const anyPrice = shownRows.some(r => r.price != null)
   const accountTotals = ACCOUNTS
-    .map(a => ({ ...a, value: rows.filter(r => r.account === a.code).reduce((s, r) => s + (r.value ?? 0), 0) }))
+    .map(a => ({ ...a, value: rows.filter(r => r.account === a.code && isCad(r)).reduce((s, r) => s + (r.value ?? 0), 0) }))
     .filter(a => a.value > 0)
+  // Gain / loss against cost basis: non-registered vs registered, CAD holdings
+  // that have both a price and a cost. Holdings missing either are counted
+  // separately, not quietly treated as zero.
+  const REGISTERED = ['RRSP', 'TFSA', 'LIRA']
+  const costScope = rows.filter(r => instFilter === 'ALL' || r.institution === instFilter)
+  const summarize = list => {
+    const costed = list.filter(r => isCad(r) && r.gain != null)
+    const value = costed.reduce((s, r) => s + r.value, 0)
+    const cost = costed.reduce((s, r) => s + r.cost, 0)
+    return {
+      value, cost, gain: value - cost, pct: cost > 0 ? ((value - cost) / cost) * 100 : null,
+      count: costed.length,
+      without: list.filter(r => isCad(r) && r.value != null && r.cost == null).length,
+      estimated: costed.filter(r => r.cost_source === 'estimated').length,
+    }
+  }
+  const costSummary = [
+    { label: 'Non-registered', ...summarize(costScope.filter(r => r.account === 'NON_REG')) },
+    { label: 'Registered (RRSP · TFSA)', ...summarize(costScope.filter(r => REGISTERED.includes(r.account))) },
+    { label: 'All accounts', ...summarize(costScope) },
+  ]
+  const anyCost = costSummary.some(c => c.count > 0)
+  const fmtGain = n => `${n >= 0 ? '+' : '−'}${fmtCad.format(Math.abs(n))}`
+  const gainColor = n => (n >= 0 ? 'var(--ok)' : 'var(--accent)')
+  // ---- Export for the retirement planner ----
+  const [usdCad, setUsdCad] = useState(() => {
+    try { return localStorage.getItem('etf_usd_cad') || '1.4230' } catch { return '1.4230' }
+  })
+  const [exportNote, setExportNote] = useState('')
+  const plannerExport = buildPlannerExport(rows, { usdCad: parseFloat(usdCad) })
+  const plannerJson = JSON.stringify(plannerExport, null, 2)
+  const hasUsd = rows.some(r => r.value != null && r.currency === 'USD')
+  function changeUsdCad(v) {
+    setUsdCad(v)
+    try { localStorage.setItem('etf_usd_cad', v) } catch { /* private mode: the rate just isn't remembered */ }
+  }
+  async function copyPlannerExport() {
+    try {
+      await navigator.clipboard.writeText(plannerJson)
+      setExportNote('Copied — open your retirement planner and paste it into “Import from my ETF tracker”.')
+    } catch {
+      // Clipboard can be refused; the text box below is selectable instead.
+      const box = document.getElementById('plannerExportBox')
+      if (box) { box.focus(); box.select() }
+      setExportNote('Couldn’t copy automatically — the text below is selected, so tap and hold, then Copy.')
+    }
+  }
+  function downloadPlannerExport() {
+    const url = URL.createObjectURL(new Blob([plannerJson], { type: 'application/json' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `portfolio-for-planner-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+  const PLANNER_ROWS = [
+    { code: 'NON_REG', label: 'Non-registered' }, { code: 'RRSP', label: 'RRSP' },
+    { code: 'LIRA', label: 'Locked-in (LIRA)' }, { code: 'TFSA', label: 'TFSA' },
+  ]
   const totalLabelParts = []
   if (instFilter !== 'ALL') totalLabelParts.push(instLabel(instFilter))
   if (acctFilter !== 'ALL') totalLabelParts.push(acctLabel(acctFilter))
@@ -337,8 +408,26 @@ export default function Dashboard() {
                             />
                           ) : r.shares}
                         </td>
-                        <td className="num">{r.price != null ? fmtCad.format(r.price) : '—'}</td>
-                        <td className="num">{r.value != null ? fmtCad.format(r.value) : '—'}</td>
+                        <td className="num">{r.price != null ? fmtCad.format(r.price) : '—'}{r.price != null && !isCad(r) ? ` ${r.currency}` : ''}</td>
+                        <td className="num">
+                          {r.value != null ? fmtCad.format(r.value) : '—'}{r.value != null && !isCad(r) ? ` ${r.currency}` : ''}
+                          {r.cost != null && (
+                            <>
+                              <br />
+                              <span className="muted" title={`Cost basis (ACB)${r.cost_source ? `, ${r.cost_source}` : ''}${r.book_cost_date ? ` as of ${r.book_cost_date}` : ''}`}>
+                                ACB {r.cost_source === 'estimated' ? '~' : ''}{fmtCad.format(r.cost)}
+                              </span>
+                            </>
+                          )}
+                          {r.gain != null && (
+                            <>
+                              <br />
+                              <span style={{ color: gainColor(r.gain), fontFamily: 'var(--mono)', fontSize: 12 }}>
+                                {fmtGain(r.gain)}{r.cost > 0 ? ` (${r.gain >= 0 ? '+' : ''}${((r.gain / r.cost) * 100).toFixed(1)}%)` : ''}
+                              </span>
+                            </>
+                          )}
+                        </td>
                         <td className="num" style={{ whiteSpace: 'nowrap' }}>
                           {editingId === r.id ? (
                             <button className="btn small" onClick={() => saveEdit(r.id)}>Save</button>
@@ -369,11 +458,92 @@ export default function Dashboard() {
                     </div>
                     <span className="amt">{fmtCad.format(total)}</span>
                   </div>
+                  {usdCount > 0 && (
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      {usdCount} USD-priced holding{usdCount === 1 ? ' is' : 's are'} shown in USD and left out of the CAD totals.
+                    </div>
+                  )}
+                  {anyCost && (
+                    <div style={{ marginTop: 14 }}>
+                      <div className="field-label" style={{ margin: 0 }}>Gain / loss vs cost (ACB)</div>
+                      {costSummary.filter(c => c.count > 0).map(c => (
+                        <div key={c.label} style={{ padding: '6px 0', borderBottom: '1px solid var(--ledger-line)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                            <span style={{ fontSize: 13 }}>{c.label}</span>
+                            <span style={{ color: gainColor(c.gain), fontFamily: 'var(--mono)', fontWeight: 700 }}>
+                              {fmtGain(c.gain)}{c.pct != null ? ` (${c.gain >= 0 ? '+' : ''}${c.pct.toFixed(1)}%)` : ''}
+                            </span>
+                          </div>
+                          <div className="muted">
+                            {fmtCad.format(c.value)} now vs {fmtCad.format(c.cost)} cost · {c.count} holding{c.count === 1 ? '' : 's'}
+                            {c.without > 0 ? ` · ${c.without} without a cost yet` : ''}
+                            {c.estimated > 0 ? ` · ${c.estimated} with an estimated cost` : ''}
+                          </div>
+                        </div>
+                      ))}
+                      <div className="muted" style={{ marginTop: 6 }}>
+                        Gain = today's value minus cost. Inside an RRSP or TFSA this is performance only — it isn't a taxable gain.
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </>
           )}
         </div>
+
+        {!loading && rows.length > 0 && anyPrice && (
+          <div className="card">
+            <h2>Send to retirement planner</h2>
+            <p className="muted">
+              Today’s market value per account, plus the non-registered gain against
+              your ACB, in the format your retirement planner imports. Everything is
+              read from the holdings above; nothing is uploaded.
+            </p>
+            {hasUsd && (
+              <div style={{ marginBottom: 10 }}>
+                <label className="field-label">USD → CAD rate (for your US-listed holdings)</label>
+                <input
+                  value={usdCad}
+                  onChange={e => changeUsdCad(e.target.value)}
+                  inputMode="decimal"
+                  style={{ maxWidth: 120 }}
+                />
+              </div>
+            )}
+            {PLANNER_ROWS.map(a => {
+              const acc = plannerExport.accounts[a.code]
+              if (!acc.holdings) return null
+              return (
+                <div key={a.code} style={{ padding: '6px 0', borderBottom: '1px solid var(--ledger-line)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: 13 }}>{a.label}</span>
+                    <span style={{ fontFamily: 'var(--mono)' }}>{fmtCad.format(acc.marketValue)}</span>
+                  </div>
+                  {a.code === 'NON_REG' && plannerExport.planner.nonRegCapitalGainsPct != null && (
+                    <div className="muted">
+                      ACB {fmtCad.format(acc.acb)} · unrealized gain {fmtGain(acc.gain)} ·
+                      <strong> {plannerExport.planner.nonRegCapitalGainsPct}% of its value</strong> is gain
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {plannerExport.warnings.map((w, i) => <div key={i} className="notice" style={{ marginTop: 8 }}>{w}</div>)}
+            <div className="muted" style={{ marginTop: 8 }}>{plannerExport.notTracked}</div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+              <button className="btn" onClick={copyPlannerExport}>Copy for planner</button>
+              <button className="btn secondary" onClick={downloadPlannerExport}>Download .json</button>
+            </div>
+            {exportNote && <div className="muted" style={{ marginTop: 8 }}>{exportNote}</div>}
+            <textarea
+              id="plannerExportBox"
+              readOnly
+              value={plannerJson}
+              style={{ width: '100%', height: 90, marginTop: 10, fontFamily: 'var(--mono)', fontSize: 11 }}
+            />
+          </div>
+        )}
       </main>
     </>
   )

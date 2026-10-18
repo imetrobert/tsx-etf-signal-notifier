@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { normalizeTicker, displayTicker, fmtCad } from '../lib/tickers'
-import { diffPositions, normalizeFundName, searchableFundName } from '../lib/funds'
+import { diffPositions, planCost, normalizeFundName, searchableFundName } from '../lib/funds'
+import { readStatementPdf, parseStatementLines, buildCostIndex } from '../lib/statementCost'
 import { parseHoldingsExport } from '../lib/holdingsExport'
 import Navbar from './Navbar'
 
@@ -12,6 +13,11 @@ const ACCOUNTS = [
   { code: 'NON_REG', label: 'Non-registered' },
 ]
 const acctLabel = code => ACCOUNTS.find(a => a.code === code)?.label ?? code
+
+const costFields = plan => plan
+  ? { book_cost: plan.cost, book_cost_cad: plan.costCad ?? null, book_cost_date: plan.date, cost_source: plan.source }
+  : {}
+const SOURCE_LABEL = { statement: 'from statement', export: 'from export', estimated: 'estimated' }
 
 const INSTITUTION_LABEL = { MANULIFE: 'Manulife', WEALTHSIMPLE: 'Wealthsimple' }
 const instName = code => INSTITUTION_LABEL[code] ?? code
@@ -36,7 +42,7 @@ const fmtImportDate = iso => iso
 // export can hold several that land in the same one — a CAD and a USD cash
 // account are both non-registered. Left separate, each would see the other's
 // funds as missing and propose removing them.
-function buildSections(accounts, holdings, fundMap, institution) {
+function buildSections(accounts, holdings, fundMap, institution, costCtx) {
   const groups = new Map()
   for (const acct of accounts) {
     const key = acct.accountType || `unknown:${acct.accountNumber}`
@@ -60,13 +66,18 @@ function buildSections(accounts, holdings, fundMap, institution) {
     }
     groups.set(key, group)
   }
-  return [...groups.values()].map(g => sectionRows(g, holdings, fundMap))
+  return [...groups.values()].map(g => sectionRows(g, holdings, fundMap, undefined, costCtx))
 }
 
 // Builds (or rebuilds) a section's diff against the holdings of its app account
 // at the institution the export came from — the other institution's holdings
 // are never compared, so they can't be proposed for removal.
-function sectionRows(group, holdings, fundMap, previousRows) {
+// costCtx.statement is the cost index from an attached Manulife statement.
+function sectionRows(group, holdings, fundMap, previousRows, costCtx = {}) {
+  const today = new Date().toISOString().slice(0, 10)
+  const statementLine = costCtx.statement
+    ? row => costCtx.statement.get(`${group.accountType}|${normalizeFundName(row.statementName)}`) || null
+    : null
   const mine = group.accountType
     ? holdings.filter(h => heldAt(h) === group.institution && (h.account || 'NON_REG') === group.accountType)
     : []
@@ -81,8 +92,18 @@ function sectionRows(group, holdings, fundMap, previousRows) {
     rows: diffPositions(group.positions, mine, fundMap).map(r => {
       const before = edited.get(r.key)
       const ticker = before?.tickerEdited ? before.ticker : r.ticker
+      const costPlan = planCost(r, { institution: group.institution, statement: statementLine, today })
+      // A holding is "without cost" until some source gives it one — a plan
+      // this import, or a cost already on file.
+      const needsCost = r.action !== 'remove' && !costPlan && r.holding?.book_cost == null
+      // A cost write is worth doing on its own when nothing else about the row changes.
+      const costChanged = !!costPlan && (r.holding?.book_cost == null || r.holding.book_cost_cad == null ||
+        Math.abs(Number(r.holding.book_cost) - costPlan.cost) >= 0.005)
       return {
         ...r,
+        costPlan,
+        needsCost,
+        costChanged,
         ticker,
         tickerEdited: before?.tickerEdited,
         nickname: before?.nicknameEdited ? before.nickname : r.nickname,
@@ -103,6 +124,10 @@ export default function ImportHoldings() {
   const [fileName, setFileName] = useState('')
   const [statementDate, setStatementDate] = useState(null)
   const [institution, setInstitution] = useState(null)
+  // An attached Manulife statement: { index, date, name, warnings }.
+  const [statement, setStatement] = useState(null)
+  const [statementBusy, setStatementBusy] = useState(false)
+  const [statementError, setStatementError] = useState('')
   const [warnings, setWarnings] = useState([])
   const [lookups, setLookups] = useState({})
   const [pasted, setPasted] = useState('')
@@ -143,7 +168,7 @@ export default function ImportHoldings() {
       setStatementDate(parsed.statementDate)
       setInstitution(parsed.institution)
       setWarnings(parsed.warnings)
-      setSections(buildSections(parsed.accounts, holdings, fundMap, parsed.institution))
+      setSections(buildSections(parsed.accounts, holdings, fundMap, parsed.institution, { statement: statement?.index }))
     } catch (err) {
       setError(`Couldn't read that export: ${err.message}`)
       setSections([])
@@ -158,11 +183,31 @@ export default function ImportHoldings() {
     e.target.value = '' // let the same file be picked again after a fix
   }
 
+  // Reads the cost column off a Manulife statement PDF and re-plans every
+  // section's costs with it. The PDF is read on this device.
+  async function attachStatement(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setStatementBusy(true)
+    setStatementError('')
+    try {
+      const parsed = parseStatementLines(await readStatementPdf(file))
+      if (!parsed.accounts.length) throw new Error(parsed.warnings.join(' '))
+      const next = { index: buildCostIndex(parsed), date: parsed.statementDate, name: file.name, warnings: parsed.warnings }
+      setStatement(next)
+      setSections(prev => prev.map(sec => sectionRows(sec, holdings, fundMap, sec.rows, { statement: next.index })))
+    } catch (err) {
+      setStatementError(`Couldn't read that statement: ${err.message}`)
+    }
+    setStatementBusy(false)
+  }
+
   // Changing the account type re-diffs that section against the holdings in the
   // newly chosen account.
   function setSectionAccount(idx, accountType) {
     setSections(prev => prev.map((s, i) =>
-      i === idx ? sectionRows({ ...s, accountType }, holdings, fundMap, s.rows) : s))
+      i === idx ? sectionRows({ ...s, accountType }, holdings, fundMap, s.rows, { statement: statement?.index }) : s))
   }
 
   // Looks the fund up by name so its ticker doesn't have to be researched by
@@ -199,7 +244,11 @@ export default function ImportHoldings() {
   }
 
   const pending = useMemo(
-    () => sections.flatMap(s => s.rows.filter(r => r.include && r.action !== 'none')).length,
+    () => sections.flatMap(s => s.rows.filter(r =>
+      (r.include && r.action !== 'none') || (r.action === 'none' && r.costChanged))).length,
+    [sections])
+  const needCost = useMemo(
+    () => sections.flatMap(s => s.rows.filter(r => r.needsCost)),
     [sections])
   const blocked = useMemo(
     () => sections.flatMap(s => s.rows.filter(r => r.action === 'add' && !r.ticker.trim())).length,
@@ -252,7 +301,7 @@ export default function ImportHoldings() {
   async function apply() {
     setApplying(true)
     setError('')
-    const done = { added: 0, adjusted: 0, removed: 0 }
+    const done = { added: 0, adjusted: 0, removed: 0, costs: 0 }
     const problems = []
     let remembered = true // false if etf_fund_map / etf_statement_imports are missing
 
@@ -260,6 +309,14 @@ export default function ImportHoldings() {
       if (!section.accountType) continue
       const applied = []
       for (const row of section.rows) {
+        // Units unchanged but the cost moved (a statement attached, or
+        // Wealthsimple's book value refreshed): write the cost alone.
+        if (row.action === 'none' && row.costChanged && row.holding) {
+          const { error } = await supabase.from('etf_holdings').update(costFields(row.costPlan)).eq('id', row.holding.id)
+          if (error) problems.push(`${row.statementName} (cost): ${error.message}`)
+          else done.costs++
+          continue
+        }
         if (!row.include || row.action === 'none') continue
         // Wealthsimple tickers come from the export already in Yahoo form
         // (US listings are bare, so adding .TO would break them); only one
@@ -275,7 +332,7 @@ export default function ImportHoldings() {
             done.removed++
           } else if (row.action === 'adjust') {
             const { error } = await supabase.from('etf_holdings')
-              .update({ shares: row.quantity, fund_name: nickname, updated_at: new Date().toISOString() })
+              .update({ shares: row.quantity, fund_name: nickname, ...costFields(row.costPlan), updated_at: new Date().toISOString() })
               .eq('id', row.holding.id)
             if (error) throw error
             done.adjusted++
@@ -283,7 +340,7 @@ export default function ImportHoldings() {
             if (!ticker) throw new Error('no ticker')
             const { error } = await supabase.from('etf_holdings').upsert({
               ticker, shares: row.quantity, account: section.accountType,
-              institution: section.institution, fund_name: nickname,
+              institution: section.institution, fund_name: nickname, ...costFields(row.costPlan),
             }, { onConflict: 'ticker,account,institution' })
             if (error) throw error
             done.added++
@@ -429,13 +486,45 @@ export default function ImportHoldings() {
               holdings back to {fmtStatementDate(statementDate)}.
             </div>
           )}
+          {sections.length > 0 && institution === 'MANULIFE' && (
+            <div className={needCost.length > 0 ? 'notice' : 'signal-reasons'} style={{ marginTop: 10 }}>
+              {needCost.length > 0 ? (
+                <>
+                  <strong>{needCost.length} holding{needCost.length === 1 ? ' has' : 's have'} no cost basis (ACB) yet:</strong>{' '}
+                  {needCost.slice(0, 6).map(r => r.nickname || r.statementName).join(', ')}
+                  {needCost.length > 6 ? `, and ${needCost.length - 6} more` : ''}.
+                  {' '}Attach your latest Manulife statement (PDF) to fill it in.
+                </>
+              ) : (
+                <>Cost basis is on file for every holding. Attach a statement any time to true it up.</>
+              )}
+              <div style={{ marginTop: 8 }}>
+                <input type="file" accept="application/pdf,.pdf" onChange={attachStatement} disabled={statementBusy} />
+              </div>
+              {statementBusy && <div className="muted" style={{ marginTop: 6 }}>Reading statement…</div>}
+              {statementError && <div style={{ marginTop: 6, color: 'var(--accent)' }}>{statementError}</div>}
+              {statement && !statementError && (
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Statement for {fmtStatementDate(statement.date)} attached ({statement.name}). It is read on
+                  this device — nothing is uploaded.
+                  {statement.warnings.map((w, i) => <div key={i}>{w}</div>)}
+                </div>
+              )}
+              {statement && needCost.length > 0 && !statementBusy && (
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Still without a cost: no matching line in that statement for {needCost.length === 1 ? 'it' : 'them'}.
+                  A fund bought after {fmtStatementDate(statement.date)} won't be on it — attach a newer statement.
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {result && (
           <div className="card">
             <h2>Import applied</h2>
             <div className="signal-reasons">
-              {result.added} added, {result.adjusted} adjusted, {result.removed} removed.
+              {result.added} added, {result.adjusted} adjusted, {result.removed} removed{result.costs > 0 ? `, ${result.costs} cost basis update${result.costs === 1 ? '' : 's'}` : ''}.
             </div>
             {result.problems.length > 0 && (
               <div className="err">
@@ -556,6 +645,15 @@ export default function ImportHoldings() {
                                   {row.currency && row.currency !== 'CAD' ? ` ${row.currency}` : ''}
                                 </span></>
                               )}
+                              {row.costPlan ? (
+                                <><br /><span className="muted" title="Cost basis (ACB) that will be saved">
+                                  ACB {fmtCad.format(row.costPlan.cost)}
+                                  {row.currency && row.currency !== 'CAD' ? ` ${row.currency}` : ''}
+                                  {' · '}{SOURCE_LABEL[row.costPlan.source]}
+                                </span></>
+                              ) : row.needsCost ? (
+                                <><br /><span className="tag watch">needs cost</span></>
+                              ) : null}
                             </td>
                             <td>
                               {row.action === 'add' ? (
