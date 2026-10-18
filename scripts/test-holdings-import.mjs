@@ -8,8 +8,11 @@
 
 import {
   diffPositions, normalizeFundName, prettifyFundName, searchableFundName,
+  rollForwardCost, planCost,
 } from '../src/lib/funds.js'
-import { parseHoldingsExport, toYahooSymbol, detectInstitution } from '../src/lib/holdingsExport.js'
+import { parseStatementLines, buildCostIndex } from '../src/lib/statementCost.js'
+import { buildPlannerExport } from '../src/lib/plannerExport.js'
+import { parseHoldingsExport, toYahooSymbol, detectInstitution, accountTypeFor } from '../src/lib/holdingsExport.js'
 
 let failures = 0
 function check(name, actual, expected) {
@@ -130,7 +133,7 @@ console.log('\nWealthsimple export')
   check('fractional units are kept exactly', pos('HQ88EEEE43CAD', 'XEQT.TO').quantity, 98.8137)
   check('whole position shape (CAD)', pos('HQ88EEEE43CAD', 'XEQT.TO'), {
     name: 'iShares Core Equity ETF Portfolio', quantity: 98.8137, unitPrice: 45.46,
-    marketValue: 4492.07, ticker: 'XEQT.TO', nickname: 'iShares Core Equity ETF Portfolio', currency: 'CAD',
+    marketValue: 4492.07, ticker: 'XEQT.TO', nickname: 'iShares Core Equity ETF Portfolio', currency: 'CAD', cost: 100, costCad: 100,
   })
   check('a USD position carries its own currency', pos('HQ88EEEE43CAD', 'ROK').currency, 'USD')
   check('the account itself stays CAD', byNumber('HQ88EEEE43CAD').currency, 'CAD')
@@ -171,6 +174,126 @@ console.log('\nWealthsimple export')
     [pos('HQ88EEEE43CAD', 'XEQT.TO')],
     [{ id: 'h1', ticker: 'XEQT.TO', shares: 98.8137, fund_name: null, account: 'RRSP' }], {},
   )[0].action, 'none')
+}
+
+console.log('\nManulife statement — cost basis')
+{
+  const lines = [
+    'For Accounts Belonging to MR TEST PERSON For Period Ending September 30, 2026',
+    'Cash (CAD) - AB1-00XX-A',
+    'Cash and Cash Equivalents',
+    'CASH 1,001.29 1,001.29 1,001.29',
+    'Total Cash and Cash Equivalents (CAD) $ 1,001.29 $ 1,001.29',
+    'Equity',
+    'BCE INC NEW 445 seg 14,502.55 ³ 28.970 12,891.65',
+    'Mutual Funds',
+    'CIG GLB EQ CC CL F -NL 1,831.0200 seg 56,945.77 33.358 61,079.35',
+    'Total Mutual Funds (CAD) $ 292,666.64 $ 323,269.24',
+    'Account Total AB1-00XX-A (CAD) $ 308,170.48 $ 337,162.18',
+    'Cash USD (USD) - AB1-00XX-B',
+    'BNS INV SAV ACT SR A -NL $US 107.1137 seg 107.11 1.000 107.11',
+    'RRSP Account (CAD) - AB1-00XX-T',
+    'FDLTY INSIG CL SR F -NL 1,113.8294 seg 39,925.61 46.146 51,398.33',
+    // The same account carries on after a page break, with no heading.
+    'Account Holdings',
+    'Quantity Held In Cost Current Price Accrued Interest Current Market Value',
+    'GOOD NATURED PRODS INC* 4 seg 0.28 0.000 0.00',
+    'TFSA (CAD) - AB1-00XX-Q',
+    'FDLTY INSIG CL SR F -NL 978.9960 seg 25,773.10 46.146 45,176.36',
+  ]
+  const r = parseStatementLines(lines)
+  check('statement date', r.statementDate, '2026-09-30')
+  check('accounts read (USD skipped)', r.accounts.map(a => [a.accountNumber, a.accountType, a.positions.length]),
+    [['AB1-00XX-A', 'NON_REG', 2], ['AB1-00XX-T', 'RRSP', 2], ['AB1-00XX-Q', 'TFSA', 1]])
+  check('cash lines are not holdings', r.accounts[0].positions.map(p => p.name), ['BCE INC NEW', 'CIG GLB EQ CC CL F -NL'])
+  check('footnote mark is skipped', r.accounts[0].positions[0], { name: 'BCE INC NEW', quantity: 445, cost: 14502.55 })
+  check('fractional units and cost', r.accounts[0].positions[1], { name: 'CIG GLB EQ CC CL F -NL', quantity: 1831.02, cost: 56945.77 })
+  check('a position after a page break stays in its account', r.accounts[1].positions[1].name, 'GOOD NATURED PRODS INC*')
+  check('USD account is explained', r.warnings.some(w => /USD/.test(w)), true)
+
+  const idx = buildCostIndex(r)
+  check('same fund in two accounts stays separate', [
+    idx.get('RRSP|' + normalizeFundName('FDLTY INSIG CL SR F -NL')).cost,
+    idx.get('TFSA|' + normalizeFundName('FDLTY INSIG CL SR F -NL')).cost,
+  ], [39925.61, 25773.10])
+  check('index carries the statement date', idx.get('NON_REG|' + normalizeFundName('BCE INC NEW')).date, '2026-09-30')
+  check('"Locked-in RRSP" is a locked-in account, not an RRSP', [
+    accountTypeFor('Locked-in RRSP'), accountTypeFor('Locked-in RRSP (CAD)'), accountTypeFor('LIRA'), accountTypeFor('RRSP Account (CAD)'),
+  ], ['LIRA', 'LIRA', 'LIRA', 'RRSP'])
+  check('not a statement', parseStatementLines(['hello']).warnings.some(w => /Cost column/.test(w)), true)
+
+  // Cost carried between unit counts.
+  check('same units keep the cost', rollForwardCost({ cost: 1000, units: 10, toUnits: 10, price: 120 }), { cost: 1000, estimated: false })
+  check('a partial sale removes cost in proportion', rollForwardCost({ cost: 1000, units: 10, toUnits: 6, price: 120 }), { cost: 600, estimated: false })
+  check('added units are costed at the going price', rollForwardCost({ cost: 1000, units: 10, toUnits: 10.5, price: 120 }), { cost: 1060, estimated: true })
+  check('added units with no price can’t be costed', rollForwardCost({ cost: 1000, units: 10, toUnits: 11, price: null }), null)
+
+  const today = '2026-10-17'
+  const stmt = row => idx.get('NON_REG|' + normalizeFundName(row.statementName)) || null
+  const held = (shares, cost) => ({ id: 'h', shares, book_cost: cost, book_cost_date: '2026-08-31', cost_source: 'statement' })
+  const base = { action: 'adjust', statementName: 'BCE INC NEW', quantity: 445, unitPrice: 30, cost: null }
+  check('a new asset takes its cost from the statement',
+    planCost({ ...base, action: 'add', holding: null }, { institution: 'MANULIFE', statement: stmt, today }),
+    { cost: 14502.55, costCad: 14502.55, source: 'statement', date: '2026-09-30' })
+  check('a new asset with no statement has no cost', planCost({ ...base, action: 'add', holding: null }, { institution: 'MANULIFE', today }), null)
+  check('a sale since the statement trims the statement cost',
+    planCost({ ...base, quantity: 222.5, holding: held(445, 14000) }, { institution: 'MANULIFE', statement: stmt, today }),
+    { cost: 7251.28, costCad: 7251.28, source: 'statement', date: '2026-09-30' })
+  check('a held cost shrinks in proportion on a sale',
+    planCost({ ...base, statementName: 'X', quantity: 5, holding: held(10, 1000) }, { institution: 'MANULIFE', today }),
+    { cost: 500, costCad: 500, source: 'statement', date: '2026-08-31' })
+  check('a held cost grows as an estimate when units are added',
+    planCost({ ...base, statementName: 'X', quantity: 10.5, unitPrice: 120, holding: held(10, 1000) }, { institution: 'MANULIFE', today }),
+    { cost: 1060, costCad: 1060, source: 'estimated', date: '2026-08-31' })
+  check('unchanged units and a held cost need no write',
+    planCost({ ...base, statementName: 'X', quantity: 10, holding: held(10, 1000) }, { institution: 'MANULIFE', today }), null)
+  check('Wealthsimple always takes the export’s book value',
+    planCost({ ...base, cost: 8612.32, holding: null, action: 'add' }, { institution: 'WEALTHSIMPLE', today }),
+    { cost: 8612.32, costCad: 8612.32, source: 'export', date: today })
+  check('a removed row has no cost', planCost({ ...base, action: 'remove' }, { institution: 'MANULIFE', statement: stmt, today }), null)
+}
+
+console.log('\nretirement planner export')
+{
+  const now = new Date('2026-10-17T15:00:00Z')
+  const row = (account, value, cost, extra = {}) => ({
+    account, value, currency: 'CAD', priceDate: '2026-10-16', cost_cad: cost, book_cost: cost, cost_source: 'statement', ...extra,
+  })
+  const rows = [
+    row('NON_REG', 10000, 6000),
+    row('NON_REG', 5000, 5000),
+    row('RRSP', 40000, 30000),
+    row('LIRA', 20000, 15000),
+    row('TFSA', 30000, 25000),
+  ]
+  const e = buildPlannerExport(rows, { usdCad: 1.4, now })
+  check('balances per account', [e.planner.currentRrsp, e.planner.currentTfsa, e.planner.liraBalance, e.planner.currentNonReg], [40000, 30000, 20000, 15000])
+  check('non-registered gain % is (value − ACB) / value', e.planner.nonRegCapitalGainsPct, 26.67)
+  check('gain in dollars', e.accounts.NON_REG.gain, 4000)
+  check('no warnings when everything is known', e.warnings, [])
+  check('shape', [e.format, e.version, e.currency], ['etf-tracker-portfolio', 1, 'CAD'])
+
+  // USD: value converted at the rate, cost taken from the CAD book value.
+  const usd = buildPlannerExport([row('NON_REG', 1000, 1300, { currency: 'USD', book_cost: 900 })], { usdCad: 1.4, now })
+  check('a USD holding is converted at the rate', usd.planner.currentNonReg, 1400)
+  check('its tax cost is the CAD figure, not the USD one', usd.accounts.NON_REG.acb, 1300)
+  check('conversion is disclosed', usd.warnings.some(w => /1\.4/.test(w)), true)
+  check('no rate means the USD holding is left out, loudly',
+    buildPlannerExport([row('NON_REG', 1000, 1300, { currency: 'USD' })], { now }).warnings.some(w => /no USD/.test(w)), true)
+
+  // Gaps are reported, not hidden.
+  const gaps = buildPlannerExport([row('NON_REG', 10000, 6000), row('NON_REG', 10000, null, { book_cost: null, cost_cad: null }), { account: 'RRSP', value: null }], { now })
+  check('a holding without cost is excluded from the % and disclosed', [gaps.planner.nonRegCapitalGainsPct, gaps.warnings.some(w => /1 of 2/.test(w))], [40, true])
+  check('an unpriced holding is disclosed', gaps.warnings.some(w => /no price yet/.test(w)), true)
+  check('an estimated cost is disclosed', buildPlannerExport([row('NON_REG', 10000, 6000, { cost_source: 'estimated' })], { now }).warnings.some(w => /estimated/.test(w)), true)
+
+  check('a net loss gives 0% with a warning', (() => {
+    const l = buildPlannerExport([row('NON_REG', 5000, 8000)], { now })
+    return [l.planner.nonRegCapitalGainsPct, l.warnings.some(w => /net loss/.test(w))]
+  })(), [0, true])
+  check('no cost on file leaves the % out (planner keeps its own)', buildPlannerExport([row('NON_REG', 5000, null, { book_cost: null, cost_cad: null })], { now }).planner.nonRegCapitalGainsPct, null)
+  check('stale prices are flagged', buildPlannerExport([row('TFSA', 100, 90, { priceDate: '2026-10-01' })], { now }).warnings.some(w => /days old/.test(w)), true)
+  check('CAD holding falls back to book_cost when no CAD cost column', buildPlannerExport([row('NON_REG', 100, null, { book_cost: 60 })], { now }).accounts.NON_REG.acb, 60)
 }
 
 console.log('\ndiff against stored holdings')
