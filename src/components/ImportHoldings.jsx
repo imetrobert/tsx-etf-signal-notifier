@@ -128,6 +128,8 @@ export default function ImportHoldings() {
   const [statement, setStatement] = useState(null)
   const [statementBusy, setStatementBusy] = useState(false)
   const [statementError, setStatementError] = useState('')
+  // Income snapshots already saved (one per account per statement).
+  const [incomeSaved, setIncomeSaved] = useState([])
   const [warnings, setWarnings] = useState([])
   const [lookups, setLookups] = useState({})
   const [pasted, setPasted] = useState('')
@@ -137,11 +139,14 @@ export default function ImportHoldings() {
 
   const load = useCallback(async () => {
     setError('')
-    const [h, m, i] = await Promise.all([
+    const [h, m, i, inc] = await Promise.all([
       supabase.from('etf_holdings').select('*'),
       supabase.from('etf_fund_map').select('*'),
       supabase.from('etf_statement_imports').select('*').order('created_at', { ascending: false }).limit(20),
+      // A missing table (schema.sql not re-run yet) just means no income is remembered.
+      supabase.from('etf_income_snapshots').select('*'),
     ])
+    setIncomeSaved(inc.error ? [] : inc.data || [])
     if (h.error) setError(h.error.message)
     setHoldings(h.data || [])
     // A missing table just means schema.sql hasn't been re-run — the import
@@ -194,7 +199,11 @@ export default function ImportHoldings() {
     try {
       const parsed = parseStatementLines(await readStatementPdf(file))
       if (!parsed.accounts.length) throw new Error(parsed.warnings.join(' '))
-      const next = { index: buildCostIndex(parsed), date: parsed.statementDate, name: file.name, warnings: parsed.warnings }
+      const next = {
+        index: buildCostIndex(parsed), date: parsed.statementDate, name: file.name, warnings: parsed.warnings,
+        // Only the non-registered account's income matters (it's what gets taxed).
+        income: parsed.income.filter(a => a.accountType === 'NON_REG'),
+      }
       setStatement(next)
       setSections(prev => prev.map(sec => sectionRows(sec, holdings, fundMap, sec.rows, { statement: next.index })))
     } catch (err) {
@@ -247,6 +256,10 @@ export default function ImportHoldings() {
     () => sections.flatMap(s => s.rows.filter(r =>
       (r.include && r.action !== 'none') || (r.action === 'none' && r.costChanged))).length,
     [sections])
+  // Statement income not yet saved for that period (so a statement can be
+  // applied just to record it, even when no holding changed).
+  const incomeToSave = (statement?.income || []).filter(a =>
+    !incomeSaved.some(r => r.institution === 'MANULIFE' && r.account_type === a.accountType && r.period_end === statement.date))
   const needCost = useMemo(
     () => sections.flatMap(s => s.rows.filter(r => r.needsCost)),
     [sections])
@@ -301,7 +314,7 @@ export default function ImportHoldings() {
   async function apply() {
     setApplying(true)
     setError('')
-    const done = { added: 0, adjusted: 0, removed: 0, costs: 0 }
+    const done = { added: 0, adjusted: 0, removed: 0, costs: 0, income: 0 }
     const problems = []
     let remembered = true // false if etf_fund_map / etf_statement_imports are missing
 
@@ -373,6 +386,19 @@ export default function ImportHoldings() {
         })
         if (error) remembered = false
       }
+    }
+
+    // Statement income, for the retirement planner's taxable-income estimate.
+    if (incomeToSave.length) {
+      const { error } = await supabase.from('etf_income_snapshots').upsert(
+        incomeToSave.map(a => ({
+          institution: 'MANULIFE', account_type: a.accountType, period_end: statement.date,
+          dividends_ytd: a.dividendsYtd, interest_ytd: a.interestYtd, file_name: statement.name,
+        })),
+        { onConflict: 'institution,account_type,period_end' },
+      )
+      if (error) problems.push(`Statement income: ${error.message}`)
+      else done.income = incomeToSave.length
     }
 
     setResult({ ...done, problems, remembered })
@@ -510,6 +536,13 @@ export default function ImportHoldings() {
                   {statement.warnings.map((w, i) => <div key={i}>{w}</div>)}
                 </div>
               )}
+              {statement?.income?.length > 0 && !statementError && (
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Non-registered income to {fmtStatementDate(statement.date)}:{' '}
+                  {fmtCad.format(statement.income.reduce((t, a) => t + a.dividendsYtd + a.interestYtd, 0))} year to date
+                  {incomeToSave.length ? ' — will be saved for the retirement planner.' : ' — already saved.'}
+                </div>
+              )}
               {statement && needCost.length > 0 && !statementBusy && (
                 <div className="muted" style={{ marginTop: 6 }}>
                   Still without a cost: no matching line in that statement for {needCost.length === 1 ? 'it' : 'them'}.
@@ -524,7 +557,7 @@ export default function ImportHoldings() {
           <div className="card">
             <h2>Import applied</h2>
             <div className="signal-reasons">
-              {result.added} added, {result.adjusted} adjusted, {result.removed} removed{result.costs > 0 ? `, ${result.costs} cost basis update${result.costs === 1 ? '' : 's'}` : ''}.
+              {result.added} added, {result.adjusted} adjusted, {result.removed} removed{result.costs > 0 ? `, ${result.costs} cost basis update${result.costs === 1 ? '' : 's'}` : ''}{result.income > 0 ? ', statement income saved' : ''}.
             </div>
             {result.problems.length > 0 && (
               <div className="err">
@@ -744,9 +777,9 @@ export default function ImportHoldings() {
             <button
               className="btn"
               onClick={apply}
-              disabled={applying || pending === 0 || noAccount || clashingAccounts.length > 0}
+              disabled={applying || pending + incomeToSave.length === 0 || noAccount || clashingAccounts.length > 0}
             >
-              {applying ? 'Applying…' : `Apply ${pending} change${pending === 1 ? '' : 's'}`}
+              {applying ? 'Applying…' : `Apply ${pending + incomeToSave.length} change${pending + incomeToSave.length === 1 ? '' : 's'}`}
             </button>
             <div className="muted" style={{ marginTop: 6 }}>
               Nothing has been saved yet. Applying makes this export your

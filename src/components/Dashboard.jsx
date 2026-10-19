@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { normalizeTicker, displayTicker, fmtCad } from '../lib/tickers'
 import { buildPlannerExport } from '../lib/plannerExport'
+import { yearsHeld, annualizedReturn, formatHeld, summarizeReturn } from '../lib/returns'
 import Navbar from './Navbar'
 
 const ACCOUNTS = [
@@ -26,6 +27,9 @@ const isFund = ticker => ticker.startsWith('0P')
 export default function Dashboard() {
   const [holdings, setHoldings] = useState([])
   const [prices, setPrices] = useState({})
+  const [incomeSnapshot, setIncomeSnapshot] = useState(null)
+  const [volStats, setVolStats] = useState(null)
+  const [pensionSnap, setPensionSnap] = useState(null)
   const [regime, setRegime] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -42,16 +46,28 @@ export default function Dashboard() {
   const [editAccount, setEditAccount] = useState('NON_REG')
   const [editInstitution, setEditInstitution] = useState('WEALTHSIMPLE')
   const [editFundName, setEditFundName] = useState('')
+  const [editHeldSince, setEditHeldSince] = useState('')
+  const [bulkDate, setBulkDate] = useState('')
+  const [bulkBusy, setBulkBusy] = useState(false)
   const [acctFilter, setAcctFilter] = useState('ALL')
   const [instFilter, setInstFilter] = useState('ALL')
 
   const load = useCallback(async () => {
     setError('')
-    const [h, p, r] = await Promise.all([
+    const [h, p, r, inc, vs, pen] = await Promise.all([
       supabase.from('etf_holdings').select('*').order('ticker'),
       supabase.from('etf_prices').select('*'),
       supabase.from('etf_market_regime').select('*').maybeSingle(),
+      // Statement income for the planner export; a missing table just means none yet.
+      supabase.from('etf_income_snapshots').select('*').eq('account_type', 'NON_REG').order('period_end', { ascending: false }).limit(1),
+      // Portfolio volatility, measured nightly; absent until the job has run once.
+      supabase.from('etf_portfolio_stats').select('*').maybeSingle(),
+      // Latest Bell DC pension snapshot; none until one is added on the Pension tab.
+      supabase.from('etf_pension_snapshots').select('*').order('snapshot_date', { ascending: false }).limit(1),
     ])
+    setPensionSnap(pen.error ? null : (pen.data || [])[0] || null)
+    setIncomeSnapshot(inc.error ? null : (inc.data || [])[0] || null)
+    setVolStats(vs.error ? null : vs.data || null)
     if (h.error) { setError(h.error.message); setLoading(false); return }
     setHoldings(h.data || [])
     if (!r.error && r.data) setRegime(r.data)
@@ -106,7 +122,7 @@ export default function Dashboard() {
       .from('etf_holdings')
       .update({
         shares: qty, account: editAccount, institution: editInstitution,
-        fund_name: editFundName.trim() || null, updated_at: new Date().toISOString(),
+        fund_name: editFundName.trim() || null, held_since: editHeldSince || null, updated_at: new Date().toISOString(),
       })
       .eq('id', id)
     if (error) setError(error.message)
@@ -134,6 +150,9 @@ export default function Dashboard() {
     return {
       ...h, price: p?.price ?? null, priceDate: p?.price_date ?? null, value, priceOnly,
       currency: p?.currency || 'CAD', cost, gain: value != null && cost != null ? value - cost : null,
+      // How long it has been held, and the yearly rate that gain works out to.
+      years: yearsHeld(h.held_since),
+      annualized: annualizedReturn(value, cost, yearsHeld(h.held_since)),
     }
   })
   const shownRows = rows.filter(r =>
@@ -163,6 +182,7 @@ export default function Dashboard() {
       count: costed.length,
       without: list.filter(r => isCad(r) && r.value != null && r.cost == null).length,
       estimated: costed.filter(r => r.cost_source === 'estimated').length,
+      ret: summarizeReturn(costed),
     }
   }
   const costSummary = [
@@ -178,7 +198,18 @@ export default function Dashboard() {
     try { return localStorage.getItem('etf_usd_cad') || '1.4230' } catch { return '1.4230' }
   })
   const [exportNote, setExportNote] = useState('')
-  const plannerExport = buildPlannerExport(rows, { usdCad: parseFloat(usdCad) })
+  const plannerExport = buildPlannerExport(rows, {
+    usdCad: parseFloat(usdCad),
+    income: incomeSnapshot
+      ? { periodEnd: incomeSnapshot.period_end, dividendsYtd: Number(incomeSnapshot.dividends_ytd), interestYtd: Number(incomeSnapshot.interest_ytd), institution: incomeSnapshot.institution }
+      : null,
+    pension: pensionSnap
+      ? { snapshotDate: pensionSnap.snapshot_date, periodStart: pensionSnap.period_start, fundName: pensionSnap.fund_name, types: pensionSnap.types || [] }
+      : null,
+    volatility: volStats
+      ? { annualVol: Number(volStats.annual_vol), months: volStats.months, windowStart: volStats.window_start, windowEnd: volStats.window_end, coverage: volStats.coverage == null ? null : Number(volStats.coverage), worst12m: volStats.worst_12m == null ? null : Number(volStats.worst_12m), updatedAt: volStats.updated_at }
+      : null,
+  })
   const plannerJson = JSON.stringify(plannerExport, null, 2)
   const hasUsd = rows.some(r => r.value != null && r.currency === 'USD')
   function changeUsdCad(v) {
@@ -208,6 +239,22 @@ export default function Dashboard() {
     { code: 'NON_REG', label: 'Non-registered' }, { code: 'RRSP', label: 'RRSP' },
     { code: 'LIRA', label: 'Locked-in (LIRA)' }, { code: 'TFSA', label: 'TFSA' },
   ]
+  // Holdings on screen that have no "held since" date yet — the bulk tool's target.
+  const undatedShown = shownRows.filter(r => !r.held_since)
+  async function applyBulkHeldSince() {
+    if (!bulkDate || bulkDate > new Date().toISOString().slice(0, 10) || undatedShown.length === 0) return
+    const where = [acctFilter !== 'ALL' && acctLabel(acctFilter), instFilter !== 'ALL' && instLabel(instFilter)].filter(Boolean).join(' · ') || 'all accounts'
+    if (!window.confirm(`Set “held since” to ${bulkDate} for ${undatedShown.length} undated holding${undatedShown.length === 1 ? '' : 's'} (${where})? Holdings that already have a date are left alone.`)) return
+    setBulkBusy(true)
+    const { error } = await supabase
+      .from('etf_holdings')
+      .update({ held_since: bulkDate, updated_at: new Date().toISOString() })
+      .in('id', undatedShown.map(r => r.id))
+    if (error) setError(error.message)
+    setBulkBusy(false)
+    setBulkDate('')
+    await load()
+  }
   const totalLabelParts = []
   if (instFilter !== 'ALL') totalLabelParts.push(instLabel(instFilter))
   if (acctFilter !== 'ALL') totalLabelParts.push(acctLabel(acctFilter))
@@ -314,6 +361,36 @@ export default function Dashboard() {
                   </button>
                 ))}
               </div>
+              {undatedShown.length > 0 && (
+                // Optional and tucked away: neither broker's export carries a purchase date,
+                // so a yearly rate of return only appears for holdings you choose to date.
+                <details style={{ margin: '8px 0' }}>
+                  <summary className="muted" style={{ cursor: 'pointer' }}>
+                    Optional: add purchase dates for a yearly rate of return
+                  </summary>
+                  <div className="signal-reasons" style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 13 }}>
+                      {undatedShown.length} holding{undatedShown.length === 1 ? ' has' : 's have'} no “held since” date. Set one date for
+                      all of them — use the account buttons above to do one account at a time.
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        type="date"
+                        value={bulkDate}
+                        max={new Date().toISOString().slice(0, 10)}
+                        onChange={e => setBulkDate(e.target.value)}
+                        style={{ fontSize: 14, padding: '4px 6px', width: 'auto' }}
+                      />
+                      <button className="btn small" disabled={!bulkDate || bulkBusy} onClick={applyBulkHeldSince}>
+                        {bulkBusy ? 'Saving…' : `Apply to ${undatedShown.length}`}
+                      </button>
+                    </div>
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      It’s one date per holding, so use the average date you bought. Holdings that already have a date aren’t touched, and Edit still changes any single one.
+                    </div>
+                  </div>
+                </details>
+              )}
             </>
           )}
           {loading ? (
@@ -427,12 +504,41 @@ export default function Dashboard() {
                               </span>
                             </>
                           )}
+                          {editingId === r.id ? (
+                            <>
+                              <br />
+                              <span className="muted">Held since </span>
+                              <input
+                                type="date"
+                                value={editHeldSince}
+                                max={new Date().toISOString().slice(0, 10)}
+                                onChange={e => setEditHeldSince(e.target.value)}
+                                style={{ fontSize: 13, padding: '3px 4px' }}
+                              />
+                            </>
+                          ) : r.years != null && (
+                            <>
+                              <br />
+                              <span className="muted" title={`Held since ${r.held_since}`}>
+                                {r.annualized != null ? (
+                                  <>
+                                    <span style={{ color: gainColor(r.annualized) }}>
+                                      {r.annualized >= 0 ? '+' : ''}{(r.annualized * 100).toFixed(1)}%/yr
+                                    </span>
+                                    {' '}over the last {formatHeld(r.years)}
+                                  </>
+                                ) : (
+                                  <>held {formatHeld(r.years)} — too recent for a yearly rate</>
+                                )}
+                              </span>
+                            </>
+                          )}
                         </td>
                         <td className="num" style={{ whiteSpace: 'nowrap' }}>
                           {editingId === r.id ? (
                             <button className="btn small" onClick={() => saveEdit(r.id)}>Save</button>
                           ) : (
-                            <button className="btn small secondary" onClick={() => { setEditingId(r.id); setEditShares(String(r.shares)); setEditAccount(r.account || 'NON_REG'); setEditInstitution(r.institution || 'WEALTHSIMPLE'); setEditFundName(r.fund_name || '') }}>Edit</button>
+                            <button className="btn small secondary" onClick={() => { setEditingId(r.id); setEditShares(String(r.shares)); setEditAccount(r.account || 'NON_REG'); setEditInstitution(r.institution || 'WEALTHSIMPLE'); setEditFundName(r.fund_name || ''); setEditHeldSince(r.held_since || '') }}>Edit</button>
                           )}
                           {' '}
                           <button className="btn small warn" onClick={() => remove(r.id, r.ticker, r.account)}>✕</button>
@@ -479,10 +585,21 @@ export default function Dashboard() {
                             {c.without > 0 ? ` · ${c.without} without a cost yet` : ''}
                             {c.estimated > 0 ? ` · ${c.estimated} with an estimated cost` : ''}
                           </div>
+                          {c.ret.annualized != null && (
+                            <div className="muted">
+                              Rate of return ≈{' '}
+                              <span style={{ color: gainColor(c.ret.annualized) }}>
+                                {c.ret.annualized >= 0 ? '+' : ''}{(c.ret.annualized * 100).toFixed(1)}%/yr
+                              </span>
+                              {' '}over the last {formatHeld(c.ret.years)} on average (weighted by cost)
+                              {' '}· {c.ret.dated} of {c.count} holdings dated
+                            </div>
+                          )}
                         </div>
                       ))}
                       <div className="muted" style={{ marginTop: 6 }}>
                         Gain = today's value minus cost. Inside an RRSP or TFSA this is performance only — it isn't a taxable gain.
+                        The yearly rate assumes each holding was bought in one go on its “held since” date (use the average date if you added to it over time) and leaves out any cash payouts you didn't reinvest.
                       </div>
                     </div>
                   )}
@@ -520,6 +637,12 @@ export default function Dashboard() {
                     <span style={{ fontSize: 13 }}>{a.label}</span>
                     <span style={{ fontFamily: 'var(--mono)' }}>{fmtCad.format(acc.marketValue)}</span>
                   </div>
+                  {a.code === 'NON_REG' && acc.income && (
+                    <div className="muted">
+                      Taxable income ≈ {fmtCad.format(acc.income.annualized)} a year
+                      (<strong>{acc.income.yieldPct}% of its value</strong>, from {fmtCad.format(acc.income.ytd)} to {acc.income.periodEnd})
+                    </div>
+                  )}
                   {a.code === 'NON_REG' && plannerExport.planner.nonRegCapitalGainsPct != null && (
                     <div className="muted">
                       ACB {fmtCad.format(acc.acb)} · unrealized gain {fmtGain(acc.gain)} ·
@@ -529,6 +652,32 @@ export default function Dashboard() {
                 </div>
               )
             })}
+            {plannerExport.pension && (
+              <div style={{ padding: '6px 0', borderBottom: '1px solid var(--ledger-line)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontSize: 13 }}>Bell DC pension</span>
+                  <span style={{ fontFamily: 'var(--mono)' }}>{fmtCad.format(plannerExport.pension.marketValue)}</span>
+                </div>
+                <div className="muted">
+                  As of {plannerExport.pension.asOf}
+                  {plannerExport.pension.annualContribution != null ? ` · about ${fmtCad.format(plannerExport.pension.annualContribution)} a year contributed (you + Bell)` : ''}
+                  {' '}· entered separately in the planner, not in the holdings above
+                </div>
+              </div>
+            )}
+            {plannerExport.volatility && (
+              <div style={{ padding: '6px 0', borderBottom: '1px solid var(--ledger-line)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                  <span style={{ fontSize: 13 }}>Portfolio volatility</span>
+                  <span style={{ fontFamily: 'var(--mono)' }}>{plannerExport.volatility.annualVolPct}% a year</span>
+                </div>
+                <div className="muted">
+                  Measured from your holdings’ own price history — {plannerExport.volatility.months} months
+                  ({plannerExport.volatility.window}), {plannerExport.volatility.coveragePct}% of value measured
+                  {plannerExport.volatility.worst12mPct != null ? ` · worst 12 months ${plannerExport.volatility.worst12mPct}%` : ''}
+                </div>
+              </div>
+            )}
             {plannerExport.warnings.map((w, i) => <div key={i} className="notice" style={{ marginTop: 8 }}>{w}</div>)}
             <div className="muted" style={{ marginTop: 8 }}>{plannerExport.notTracked}</div>
             <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
