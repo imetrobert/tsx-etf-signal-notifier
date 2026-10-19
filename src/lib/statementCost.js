@@ -27,6 +27,13 @@ const PERIOD_ENDING = /For Period Ending\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})/i
 // name, units, held-in, cost, optional footnote mark, price, market value
 const HOLDING = /^(.+?)\s+([\d,]+(?:\.\d+)?)\s+([A-Za-z]{2,4})\s+([\d,]+\.\d{2})\s+(?:[¹²³⁴⁵]\s+)?([\d,]+\.\d+)\s+([\d,]+\.\d{2})$/
 
+// "Income Summary": one block per account — a Total Dividends line (which also
+// names the account), then a Total Interest line; current period, then year to date.
+//   Cash (CAD) YN5-60LA-A Total Dividends 468.46 11,917.42
+//   Total Interest 0.00 0.00
+const INCOME_DIVIDENDS = /^(.+?)\s+\((CAD|USD)\)\s+([A-Z0-9][A-Z0-9-]+)\s+Total Dividends\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})$/
+const INCOME_INTEREST = /^Total Interest\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})$/
+
 const toNum = s => Number(String(s).replace(/,/g, ''))
 
 // lines: an array of strings (a line's pieces already joined with spaces), in
@@ -36,6 +43,9 @@ export function parseStatementLines(lines) {
   let statementDate = null
   let current = null
   const accounts = []
+  const income = []
+  let inIncome = false
+  let lastIncome = null
 
   for (const raw of lines) {
     const line = raw.replace(/\s+/g, ' ').trim()
@@ -45,6 +55,23 @@ export function parseStatementLines(lines) {
     if (period && !statementDate) {
       const month = MONTHS[period[1].toUpperCase()]
       if (month) statementDate = `${period[3]}-${String(month).padStart(2, '0')}-${String(period[2]).padStart(2, '0')}`
+    }
+
+    // The Income Summary comes after the holdings; once in it, only income lines matter.
+    if (/^Income Summary$/i.test(line)) { inIncome = true; continue }
+    if (inIncome) {
+      const d = line.match(INCOME_DIVIDENDS)
+      if (d) {
+        lastIncome = {
+          accountNumber: d[3], accountLabel: d[1], accountType: accountTypeFor(d[1]), currency: d[2],
+          dividendsPeriod: toNum(d[4]), dividendsYtd: toNum(d[5]), interestPeriod: 0, interestYtd: 0,
+        }
+        income.push(lastIncome)
+        continue
+      }
+      const i = line.match(INCOME_INTEREST)
+      if (i && lastIncome) { lastIncome.interestPeriod = toNum(i[1]); lastIncome.interestYtd = toNum(i[2]) }
+      continue
     }
 
     const heading = line.match(ACCOUNT_HEADING)
@@ -77,7 +104,9 @@ export function parseStatementLines(lines) {
   }
   if (!statementDate) warnings.push("Couldn't find the statement's period-ending date.")
   if (!usable.length) warnings.push("No holdings with a Cost column found — is this a Manulife Statement of Account?")
-  return { statementDate, accounts: usable, warnings }
+  // Income is only used for CAD accounts of a recognized type, like the holdings.
+  const usableIncome = income.filter(a => a.currency === 'CAD' && a.accountType)
+  return { statementDate, accounts: usable, income: usableIncome, warnings }
 }
 
 // Cost lookup keyed by app account + normalized fund name. Two statement
