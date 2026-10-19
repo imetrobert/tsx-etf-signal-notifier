@@ -32,6 +32,10 @@ alter table etf_holdings add column if not exists cost_source text;
 -- CAD holding it equals book_cost; for a US-listed one it differs by the
 -- exchange rate at purchase.
 alter table etf_holdings add column if not exists book_cost_cad numeric;
+-- When the position was bought (the average date, if it was added to over time),
+-- entered by hand: neither broker's export carries it. With the cost, it gives
+-- years held and an annualized rate of return.
+alter table etf_holdings add column if not exists held_since date;
 do $$ begin
   alter table etf_holdings add constraint etf_holdings_cost_source_chk
     check (cost_source in ('statement','export','estimated'));
@@ -196,6 +200,78 @@ alter table etf_statement_imports enable row level security;
 drop policy if exists "etf_statement_imports_auth" on etf_statement_imports;
 create policy "etf_statement_imports_auth" on etf_statement_imports
   for all to authenticated using (true) with check (true);
+
+-- Taxable income a non-registered account has thrown off, read from a Manulife
+-- statement's Income Summary. Year-to-date at the statement's period end; the
+-- retirement-planner export scales it to a full year to estimate the planner's
+-- "taxable income each year" yield. One row per account per statement.
+create table if not exists etf_income_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  institution text not null default 'MANULIFE',
+  account_type text not null,
+  period_end date not null,
+  dividends_ytd numeric not null default 0,
+  interest_ytd numeric not null default 0,
+  file_name text,
+  created_at timestamptz not null default now(),
+  unique (institution, account_type, period_end)
+);
+alter table etf_income_snapshots enable row level security;
+drop policy if exists "etf_income_snapshots_auth" on etf_income_snapshots;
+create policy "etf_income_snapshots_auth" on etf_income_snapshots
+  for all to authenticated using (true) with check (true);
+-- Supabase no longer grants Data API access to new public tables on its own.
+grant select, insert, update, delete on public.etf_income_snapshots to authenticated;
+grant all on public.etf_income_snapshots to service_role;
+
+-- How much the whole portfolio actually swings, measured nightly from the price
+-- history of what is held (see src/lib/portfolioVol.js). Single row. Feeds the
+-- retirement planner's Monte Carlo volatility.
+create table if not exists etf_portfolio_stats (
+  id int primary key default 1 check (id = 1),
+  annual_vol numeric not null,          -- annualized standard deviation, e.g. 0.087 = 8.7%
+  months int not null,                  -- monthly returns the figure is based on
+  window_start text,
+  window_end text,
+  coverage numeric,                     -- share of portfolio value that could be measured (0–1)
+  worst_12m numeric,                    -- worst rolling 12-month return in the window
+  details jsonb,
+  updated_at timestamptz not null default now()
+);
+alter table etf_portfolio_stats enable row level security;
+drop policy if exists "etf_portfolio_stats_read" on etf_portfolio_stats;
+create policy "etf_portfolio_stats_read" on etf_portfolio_stats
+  for select to authenticated using (true);
+-- Supabase no longer grants Data API access to new public tables on its own.
+grant select on public.etf_portfolio_stats to authenticated;
+grant all on public.etf_portfolio_stats to service_role;
+
+-- Snapshots of a workplace defined-contribution pension (Bell Canada), read
+-- once in a while from the plan's website (see src/lib/bellPension.js). One row
+-- per snapshot date. types holds the contribution-type split, e.g.
+-- [{ label, units, marketValue, opening, contributions, earnings }], where
+-- opening + contributions + earnings = marketValue over the period that starts
+-- at period_start. Feeds the retirement planner's Bell DC pension entry.
+create table if not exists etf_pension_snapshots (
+  id uuid primary key default gen_random_uuid(),
+  plan text not null default 'BELL_DC',
+  snapshot_date date not null,
+  period_start date,
+  fund_name text,
+  total_value numeric not null,
+  total_units numeric,
+  types jsonb not null default '[]'::jsonb,
+  source text,                       -- 'screenshot' | 'paste' | 'manual'
+  created_at timestamptz not null default now(),
+  unique (plan, snapshot_date)
+);
+alter table etf_pension_snapshots enable row level security;
+drop policy if exists "etf_pension_snapshots_auth" on etf_pension_snapshots;
+create policy "etf_pension_snapshots_auth" on etf_pension_snapshots
+  for all to authenticated using (true) with check (true);
+-- Supabase no longer grants Data API access to new public tables on its own.
+grant select, insert, update, delete on public.etf_pension_snapshots to authenticated;
+grant all on public.etf_pension_snapshots to service_role;
 
 -- Macro market-regime snapshot (yield curve, credit spreads, Sahm rule),
 -- refreshed by the signal job. Single row.
