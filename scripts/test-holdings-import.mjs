@@ -12,6 +12,9 @@ import {
 } from '../src/lib/funds.js'
 import { parseStatementLines, buildCostIndex } from '../src/lib/statementCost.js'
 import { buildPlannerExport } from '../src/lib/plannerExport.js'
+import { monthlyReturns, portfolioVolatility } from '../src/lib/portfolioVol.js'
+import { yearsHeld, annualizedReturn, formatHeld, summarizeReturn } from '../src/lib/returns.js'
+import { parseBellText, pensionMetrics, pensionChecks } from '../src/lib/bellPension.js'
 import { parseHoldingsExport, toYahooSymbol, detectInstitution, accountTypeFor } from '../src/lib/holdingsExport.js'
 
 let failures = 0
@@ -266,7 +269,9 @@ console.log('\nretirement planner export')
     row('LIRA', 20000, 15000),
     row('TFSA', 30000, 25000),
   ]
-  const e = buildPlannerExport(rows, { usdCad: 1.4, now })
+  const income = { periodEnd: '2025-12-31', dividendsYtd: 300, interestYtd: 0, institution: 'MANULIFE' } // a full year: no scaling caveat
+  const volatility = { annualVol: 0.09, months: 60, windowStart: '2021-10', windowEnd: '2026-09', coverage: 1, worst12m: -0.07, updatedAt: '2026-10-16T05:00:00Z' }
+  const e = buildPlannerExport(rows, { usdCad: 1.4, now, income, volatility })
   check('balances per account', [e.planner.currentRrsp, e.planner.currentTfsa, e.planner.liraBalance, e.planner.currentNonReg], [40000, 30000, 20000, 15000])
   check('non-registered gain % is (value − ACB) / value', e.planner.nonRegCapitalGainsPct, 26.67)
   check('gain in dollars', e.accounts.NON_REG.gain, 4000)
@@ -293,7 +298,218 @@ console.log('\nretirement planner export')
   })(), [0, true])
   check('no cost on file leaves the % out (planner keeps its own)', buildPlannerExport([row('NON_REG', 5000, null, { book_cost: null, cost_cad: null })], { now }).planner.nonRegCapitalGainsPct, null)
   check('stale prices are flagged', buildPlannerExport([row('TFSA', 100, 90, { priceDate: '2026-10-01' })], { now }).warnings.some(w => /days old/.test(w)), true)
+
+  // ---- taxable income (the planner's "income the account throws off each year") ----
+  const inc = (periodEnd, dividendsYtd, interestYtd = 0, institution = 'MANULIFE') => ({ periodEnd, dividendsYtd, interestYtd, institution })
+  const nr100k = [row('NON_REG', 100000, 80000)]
+  const yearEnd = buildPlannerExport(nr100k, { now, income: inc('2025-12-31', 4000, 500) })
+  check('a full year of income is a straight percentage of the balance', yearEnd.planner.nonRegYieldPct, 4.5)
+  const sept = buildPlannerExport(nr100k, { now, income: inc('2026-09-30', 3000, 0) })
+  check('nine months of income is scaled up to a year', sept.planner.nonRegYieldPct, 4)
+  check('and says so, since December distributions can differ', sept.warnings.some(w => /9 months/.test(w)), true)
+  check('income detail is carried for display', sept.accounts.NON_REG.income, { periodEnd: '2026-09-30', months: 9, ytd: 3000, annualized: 4000, yieldPct: 4 })
+  check('more than the planner allows is capped at 10%', [
+    buildPlannerExport(nr100k, { now, income: inc('2025-12-31', 15000) }).planner.nonRegYieldPct,
+    buildPlannerExport(nr100k, { now, income: inc('2025-12-31', 15000) }).warnings.some(w => /10% limit/.test(w)),
+  ], [10, true])
+  check('no statement income leaves the field out so the planner keeps its own', buildPlannerExport(nr100k, { now }).planner.nonRegYieldPct, null)
+  const mixedInst = buildPlannerExport([row('NON_REG', 90000, 70000, { institution: 'MANULIFE' }), row('NON_REG', 10000, 8000, { institution: 'WEALTHSIMPLE' })], { now, income: inc('2025-12-31', 4500) })
+  check('income is spread over the whole account, not just the statement institution', mixedInst.planner.nonRegYieldPct, 4.5)
+  check('and the other institution is disclosed as counting for $0', mixedInst.warnings.some(w => /10% of the account/.test(w)), true)
+  check('an old statement is flagged', buildPlannerExport(nr100k, { now, income: inc('2024-06-30', 2000) }).warnings.some(w => /months old/.test(w)), true)
+
+  // ---- Monte Carlo volatility ----
+  const vol = (annualVol, extra = {}) => ({ annualVol, months: 60, windowStart: '2021-10', windowEnd: '2026-09', coverage: 0.9, worst12m: -0.08, updatedAt: '2026-10-16T05:00:00Z', ...extra })
+  check('measured volatility becomes the Monte Carlo figure (as a percent, one decimal)', buildPlannerExport(nr100k, { now, volatility: vol(0.0874) }).planner.mcVolatility, 8.7)
+  check('its basis is carried for display', buildPlannerExport(nr100k, { now, volatility: vol(0.0874) }).volatility, { annualVolPct: 8.7, months: 60, window: '2021-10 to 2026-09', coveragePct: 90, worst12mPct: -8 })
+  check('no measurement leaves the field out so the planner keeps its own', buildPlannerExport(nr100k, { now }).planner.mcVolatility, null)
+  check('and says why', buildPlannerExport(nr100k, { now }).warnings.some(w => /No portfolio volatility measured/.test(w)), true)
+  check('thin coverage is disclosed', buildPlannerExport(nr100k, { now, volatility: vol(0.09, { coverage: 0.45 }) }).warnings.some(w => /45%/.test(w)), true)
+  check('a short history is disclosed', buildPlannerExport(nr100k, { now, volatility: vol(0.09, { months: 28 }) }).warnings.some(w => /28 months/.test(w)), true)
+  check('a stale measurement is disclosed', buildPlannerExport(nr100k, { now, volatility: vol(0.09, { updatedAt: '2026-09-01T00:00:00Z' }) }).warnings.some(w => /nightly job may not be running/.test(w)), true)
+  check('an absurd figure is capped at 40%', buildPlannerExport(nr100k, { now, volatility: vol(0.9) }).planner.mcVolatility, 40)
   check('CAD holding falls back to book_cost when no CAD cost column', buildPlannerExport([row('NON_REG', 100, null, { book_cost: 60 })], { now }).accounts.NON_REG.acb, 60)
+}
+
+console.log('\nportfolio volatility')
+{
+  const now = new Date('2026-10-17T00:00:00Z')
+  // Deterministic pseudo-random monthly returns with a known spread.
+  let seed = 12345
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296 }
+  const normal = () => Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd())
+  const build = (monthly, months = 60, start = 100) => {
+    const out = []; let px = start
+    for (let i = months; i >= 1; i--) {
+      const d = new Date(Date.UTC(2026, 9 - i, 15)); px *= 1 + monthly[months - i]
+      out.push({ date: d, close: px })
+    }
+    return out
+  }
+  const gen = (annualVol, n = 60, drift = 0.005) => Array.from({ length: n }, () => drift + normal() * annualVol / Math.sqrt(12))
+
+  // 1) monthly returns come out right and drop the unfinished month
+  const s1 = [
+    { date: new Date('2026-07-10T00:00:00Z'), close: 100 }, { date: new Date('2026-07-30T00:00:00Z'), close: 110 },
+    { date: new Date('2026-08-31T00:00:00Z'), close: 99 }, { date: new Date('2026-09-30T00:00:00Z'), close: 108.9 },
+    { date: new Date('2026-10-10T00:00:00Z'), close: 50 },
+  ]
+  const mr = monthlyReturns(s1, now)
+  check('month-end returns', [...mr.entries()].map(([k, v]) => [k, Math.round(v * 1000) / 1000]), [['2026-08', -0.1], ['2026-09', 0.1]])
+  check('the current unfinished month is left out', mr.has('2026-10'), false)
+  check('adjusted close beats raw close (a payout is not a drop)', [...monthlyReturns([
+    { date: new Date('2026-08-31T00:00:00Z'), close: 100, adj: 100 }, { date: new Date('2026-09-30T00:00:00Z'), close: 95, adj: 100 },
+  ], now).values()], [0])
+
+  // 2) a single holding: the estimate is near the true spread
+  const long = build(gen(0.12, 121), 121)
+  const tenYears = portfolioVolatility([{ ticker: 'A', value: 1000, series: long }], { now, windowMonths: 120 })
+  check('with 10 years of data the estimate lands near the 12% that generated it', tenYears.annualVol > 0.10 && tenYears.annualVol < 0.14, true)
+  const one = portfolioVolatility([{ ticker: 'A', value: 1000, series: long }], { now })
+  check('the default window keeps the latest 60 months', one.months, 60)
+  check('fully covered', one.coverage, 1)
+
+  // 3) diversification: two independent 12% funds, half each → ~8.5%, not 12%
+  const two = portfolioVolatility([
+    { ticker: 'A', value: 500, series: build(gen(0.12)) }, { ticker: 'B', value: 500, series: build(gen(0.12)) },
+  ], { now })
+  check('blending keeps the diversification benefit (two independent funds beat one)', two.annualVol < one.annualVol * 0.9, true)
+
+  // 4) weights matter
+  const lowHeavy = portfolioVolatility([
+    { ticker: 'LOW', value: 900, series: build(gen(0.05)) }, { ticker: 'HIGH', value: 100, series: build(gen(0.20)) },
+  ], { now })
+  const highHeavy = portfolioVolatility([
+    { ticker: 'LOW', value: 100, series: build(gen(0.05)) }, { ticker: 'HIGH', value: 900, series: build(gen(0.20)) },
+  ], { now })
+  check('more weight in the volatile fund means more portfolio volatility', highHeavy.annualVol > lowHeavy.annualVol * 1.8, true)
+
+  // 5) coverage: a holding with no history is reported, not guessed
+  const partial = portfolioVolatility([
+    { ticker: 'A', value: 600, series: build(gen(0.10)) }, { ticker: 'NOHIST', value: 400, series: null },
+  ], { now })
+  check('uncovered share is reported', [Math.round(partial.coverage * 100), partial.uncovered], [60, ['NOHIST']])
+  check('too little history is not measured', portfolioVolatility([{ ticker: 'Y', value: 1, series: build(gen(0.1, 12), 12) }], { now }), null)
+  check('nothing held means nothing to measure', portfolioVolatility([], { now }), null)
+
+  // 6) a young fund does not distort the blend (its months only count when enough value is present)
+  const young = portfolioVolatility([
+    { ticker: 'OLD', value: 900, series: build(gen(0.08)) }, { ticker: 'NEW', value: 100, series: build(gen(0.30, 30), 30) },
+  ], { now })
+  check('a young fund still lets the old history be used', young.months >= 50, true)
+  check('per-holding detail is returned', young.perHolding.map(h => h.ticker), ['OLD', 'NEW'])
+  check('a worst-12-month figure is provided', typeof one.worst12m === 'number' && one.worst12m < 0.2, true)
+}
+
+console.log('\nyears held and annualized return')
+{
+  const now = new Date('2026-10-17T12:00:00')
+  const r1 = n => Math.round(n * 1000) / 1000
+  const r2 = n => Math.round(n * 100) / 100
+  check('years held, to the day', r2(yearsHeld('2024-10-17', now)), 2)
+  check('no date means no years', yearsHeld(null, now), null)
+  check('a date in the future is ignored', yearsHeld('2027-01-01', now), null)
+  check('an unreadable date is ignored', yearsHeld('not-a-date', now), null)
+  check('10% a year over 2 years', r1(annualizedReturn(1210, 1000, 2)), 0.1)
+  check('10% a year over 3 years', r1(annualizedReturn(1331, 1000, 3)), 0.1)
+  check('a loss annualizes negative', annualizedReturn(800, 1000, 2) < 0, true)
+  check('under three months is too jumpy to annualize', annualizedReturn(1100, 1000, 0.1), null)
+  check('no cost, no rate', annualizedReturn(1100, 0, 2), null)
+  check('years and months', [formatHeld(3 + 2 / 12), formatHeld(1), formatHeld(2 + 11 / 12), formatHeld(8 / 12)], ['3 yrs 2 mo', '1 yr', '2 yrs 11 mo', '8 mo'])
+  check('plural, singular and rounding up to a whole year', [formatHeld(5), formatHeld(1 + 3 / 12), formatHeld(11.6 / 12), formatHeld(0.02), formatHeld(null)], ['5 yrs', '1 yr 3 mo', '1 yr', '1 mo', ''])
+
+  // Group figure: average holding period weighted by cost, then the dated rows' total return stretched over it.
+  const s = summarizeReturn([
+    { value: 1210, cost: 1000, held_since: '2024-10-17' },   // 2 yrs, small
+    { value: 4000, cost: 3000, held_since: '2020-10-17' },   // ~6 yrs, big
+    { value: 500, cost: 400, held_since: null },             // undated: left out
+  ], now)
+  check('undated holdings are left out and counted', s.dated, 2)
+  check('average period is weighted by cost', r2(s.years), 5)   // (1000×2 + 3000×6) / 4000
+  check('annualized is the dated total return over that period', r1(s.annualized), r1(Math.pow(5210 / 4000, 1 / 5) - 1))
+  check('nothing dated means no summary', summarizeReturn([{ value: 1, cost: 1, held_since: null }], now), { dated: 0, years: null, annualized: null })
+}
+
+console.log('\nBell DC pension')
+{
+  const now = new Date('2026-10-18T12:00:00')
+  // Same layout as the real screenshot's OCR (first type's summary row cropped off), made-up figures.
+  const cropped = `Bell Benefits =
+
+Number of
+
+Fund name Asset mix units Market value
+
+Test Balanced Fund (50-54) 100.00% 3,846.1538 $100,000.00
+
+mpany $300,000.00 $6,000.00 $29,000.00 $335,000.00
+Number of
+
+Fund name Asset mix units Market value
+
+Test Balanced Fund (50-54) 100.00% 12,884.6154 $335,000.00
+
+Hid tribution t
+
+tee coniriparon tyPe $390,000.00 $8,000.00 $37,000.00 $435,000.00
+breakdown
+`
+  const r = parseBellText(cropped)
+  check('read ok', r.ok, true)
+  check('fund name', r.fundName, 'Test Balanced Fund (50-54)')
+  check('two types, the cropped one first', r.types.map(t => t.label), ['Employee', 'Company'])
+  check('the cropped type is worked out as total minus the others', r.types[0], {
+    label: 'Employee', units: 3846.1538, marketValue: 100000, opening: 90000, contributions: 2000, earnings: 8000, derived: true,
+  })
+  check('the visible type is read as shown', r.types[1], {
+    label: 'Company', units: 12884.6154, marketValue: 335000, opening: 300000, contributions: 6000, earnings: 29000, derived: false,
+  })
+  check('the total is read as shown', r.total, { opening: 390000, contributions: 8000, earnings: 37000, marketValue: 435000 })
+  check('every arithmetic check passes', r.checks.every(c => c.ok), true)
+  check('the cropping is disclosed', r.warnings.some(w => /cropped/.test(w)), true)
+
+  // The whole table copied as text (cells on separate lines or tab-separated), both rows labelled.
+  const full = `Fund name\tAsset mix\tNumber of units\tMarket value
+Employee
+$90,000.00
+$2,000.00
+$8,000.00
+$100,000.00
+Test Balanced Fund (50-54)\t100.00%\t3,846.1538\t$100,000.00
+Company\t$300,000.00\t$6,000.00\t$29,000.00\t$335,000.00
+Test Balanced Fund (50-54)\t100.00%\t12,884.6154\t$335,000.00
+Total\t$390,000.00\t$8,000.00\t$37,000.00\t$435,000.00`
+  const f = parseBellText(full)
+  check('a complete pasted table reads the same', f.types.map(t => [t.label, t.marketValue, t.units, t.derived]), [['Employee', 100000, 3846.1538, false], ['Company', 335000, 12884.6154, false]])
+  check('and needs no derived figures', f.warnings.length, 0)
+
+  check('nothing recognisable is not read', parseBellText('hello world').ok, false)
+  check('a misread digit trips a check', pensionChecks({ types: [{ label: 'Company', units: 1, marketValue: 335500, opening: 300000, contributions: 6000, earnings: 29000 }], total: null }).some(c => !c.ok), true)
+  check('a single fund row with no breakdown still gives a value', parseBellText('Test Fund 100.00% 100.5000 $2,500.00').types[0].marketValue, 2500)
+
+  // Metrics: contributions scaled to a year from the period start; return with contributions arriving evenly.
+  const m = pensionMetrics({ snapshotDate: '2026-10-18', periodStart: '2026-01-01', types: r.types }, now)
+  check('total value', m.totalValue, 435000)
+  check('contributions split by who paid them', [m.employeeContributions, m.companyContributions], [2000, 6000])
+  check('a 9½-month period is scaled to a year', m.annualContribution, Math.round(8000 / ((new Date('2026-10-18') - new Date('2026-01-01')) / (365.25 * 86400000))))
+  check('period return is earnings over opening plus half the contributions', Math.round(m.periodReturn * 10000) / 10000, Math.round(37000 / 394000 * 10000) / 10000)
+  check('unit price and total units', [m.unitPrice, m.totalUnits], [26, 16730.7692])
+  check('a period under three months is not scaled', pensionMetrics({ snapshotDate: '2026-10-18', periodStart: '2026-09-01', types: r.types }, now).annualContribution, null)
+  check('no period start means no yearly figure', pensionMetrics({ snapshotDate: '2026-10-18', periodStart: null, types: r.types }, now).annualContribution, null)
+  check('age in days', pensionMetrics({ snapshotDate: '2025-10-18', periodStart: '2025-01-01', types: r.types }, now).ageDays, 365)
+
+  // In the planner export.
+  const rowsNR = [{ account: 'NON_REG', value: 100000, currency: 'CAD', priceDate: '2026-10-16', cost_cad: 80000, book_cost: 80000, cost_source: 'statement' }]
+  const pension = { snapshotDate: '2026-10-18', periodStart: '2026-01-01', fundName: 'Test Balanced Fund (50-54)', types: r.types }
+  const e = buildPlannerExport(rowsNR, { now, pension })
+  check('Bell balance goes to its own planner field', e.planner.bellDcBalance, 435000)
+  check('and its yearly contribution', e.planner.contribBellDc, m.annualContribution)
+  check('it is kept out of the LIRA field', e.planner.liraBalance, 0)
+  check('detail is carried for display', [e.pension.asOf, e.pension.marketValue, e.pension.employeeContributions, e.pension.companyContributions], ['2026-10-18', 435000, 2000, 6000])
+  check('no snapshot means the planner keeps its own', [buildPlannerExport(rowsNR, { now }).planner.bellDcBalance, buildPlannerExport(rowsNR, { now }).planner.contribBellDc], [null, null])
+  check('a year-old snapshot is flagged', buildPlannerExport(rowsNR, { now, pension: { ...pension, snapshotDate: '2025-06-01' } }).warnings.some(w => /over a year old/.test(w)), true)
+  check('a missing contribution period is flagged, not guessed', buildPlannerExport(rowsNR, { now, pension: { ...pension, periodStart: null } }).warnings.some(w => /contributions weren’t sent/.test(w)), true)
+  check('the pension being outside the volatility figure is disclosed', buildPlannerExport(rowsNR, { now, pension, volatility: { annualVol: 0.09, months: 60, windowStart: '2021-10', windowEnd: '2026-09', coverage: 1, worst12m: -0.07, updatedAt: '2026-10-16T05:00:00Z' } }).warnings.some(w => /no price history/.test(w)), true)
 }
 
 console.log('\ndiff against stored holdings')

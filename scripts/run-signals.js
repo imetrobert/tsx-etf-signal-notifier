@@ -10,6 +10,7 @@
 //      EMAILJS_PRIVATE_KEY, NOTIFY_EMAIL (optional — email is skipped if absent)
 
 import { createClient } from '@supabase/supabase-js'
+import { portfolioVolatility } from '../src/lib/portfolioVol.js'
 
 const STRETCH_PCT = 10 // alert when price is this % above/below its 200-day MA
 
@@ -51,9 +52,12 @@ async function fetchHistory(ticker) {
   if (!result) throw new Error(`No chart data for ${ticker}`)
   const ts = result.timestamp || []
   const closes = result.indicators?.quote?.[0]?.close || []
+  // Adjusted for distributions, so a payout day isn't read as a price drop
+  // when measuring volatility. Falls back to the plain close.
+  const adjCloses = result.indicators?.adjclose?.[0]?.adjclose || []
   const series = []
   for (let i = 0; i < ts.length; i++) {
-    if (closes[i] != null) series.push({ date: new Date(ts[i] * 1000), close: closes[i] })
+    if (closes[i] != null) series.push({ date: new Date(ts[i] * 1000), close: closes[i], adj: adjCloses[i] ?? closes[i] })
   }
   if (series.length < 210) throw new Error(`Insufficient history for ${ticker} (${series.length} days)`)
   return {
@@ -430,6 +434,7 @@ async function main() {
 
   const fired = []
   const failures = []
+  const heldSeries = {} // price history of what is actually held, for the volatility measure
 
   for (const ticker of tickers) {
     try {
@@ -446,6 +451,7 @@ async function main() {
         if (nameErr) console.warn(`  fund_name backfill failed for ${ticker}: ${nameErr.message}`)
       }
 
+      if (heldTickers.has(ticker)) heldSeries[ticker] = series
       const ind = computeIndicators(series)
       const { stateKey, signal: rawSignal } = evaluate(ticker, assetLabel(ticker, name), ind, lastStates[ticker] ?? null, series)
       // A SELL/trim alert is meaningless for something not actually owned —
@@ -507,6 +513,41 @@ async function main() {
       failures.push(`${ticker}: ${e.message}`)
       console.error(`  ${ticker} FAILED: ${e.message}`)
     }
+  }
+
+  // How much the portfolio actually swings, for the retirement planner's Monte
+  // Carlo. Never allowed to break the signal run.
+  try {
+    const { data: priceRows, error: prErr } = await db.from('etf_prices').select('ticker, price')
+    if (prErr) throw new Error(prErr.message)
+    const priceBy = Object.fromEntries((priceRows || []).map(r => [r.ticker, Number(r.price)]))
+    const unitsBy = {}
+    for (const h of holdings.data) unitsBy[h.ticker] = (unitsBy[h.ticker] || 0) + Number(h.shares)
+    // Values are in each security's own currency (not FX-converted); US-listed
+    // holdings are a small share, so the weights are close enough for this.
+    const items = Object.entries(unitsBy).map(([ticker, units]) => ({
+      ticker, value: (priceBy[ticker] || 0) * units, series: heldSeries[ticker] || null,
+    }))
+    const vol = portfolioVolatility(items)
+    if (vol) {
+      const { error: vErr } = await db.from('etf_portfolio_stats').upsert({
+        id: 1,
+        annual_vol: Math.round(vol.annualVol * 10000) / 10000,
+        months: vol.months,
+        window_start: vol.windowStart,
+        window_end: vol.windowEnd,
+        coverage: Math.round(vol.coverage * 1000) / 1000,
+        worst_12m: vol.worst12m == null ? null : Math.round(vol.worst12m * 10000) / 10000,
+        details: { covered: vol.covered, uncovered: vol.uncovered, perHolding: vol.perHolding },
+        updated_at: new Date().toISOString(),
+      })
+      if (vErr) console.error(`portfolio volatility save failed (run supabase/schema.sql to add the table): ${vErr.message}`)
+      else console.log(`Portfolio volatility: ${(vol.annualVol * 100).toFixed(1)}% a year over ${vol.months} months, ${Math.round(vol.coverage * 100)}% of value measured${vol.uncovered.length ? ` (no history: ${vol.uncovered.join(', ')})` : ''}`)
+    } else {
+      console.log('Portfolio volatility: not enough price history to measure.')
+    }
+  } catch (e) {
+    console.error(`portfolio volatility skipped: ${e.message}`)
   }
 
   if (process.env.TEST_EMAIL === 'true' && fired.length === 0) {
