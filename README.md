@@ -107,6 +107,18 @@ vs registered accounts. Where the cost comes from:
   are costed at the price on the import (`'estimated'`, shown as `~`), which a
   statement then corrects.
 
+**Held since**: neither broker's export carries a purchase date, so tap *Edit*
+on a holding and enter when you bought it (the average date, if you added to it
+over time). With the cost that gives each holding an annualized rate of
+return, (value ÷ cost)^(1 ÷ years) − 1, shown with the period it covers ("+6.8%/yr
+over the last 3 yrs 2 mo"), and each account summary a cost-weighted average. It assumes one lump purchase on that date and
+leaves out cash payouts you didn't reinvest, so read it as a guide.
+This is optional — nothing in either export carries purchase dates, so it
+only appears for holdings you choose to date; the gain/loss vs ACB is automatic
+regardless. To avoid typing every date, a collapsed bulk box on the holdings
+card ("Optional: add purchase dates…") works like this: pick the account
+(or institution) buttons, choose one date, and it fills every holding there that
+has no date yet — holdings that already have one are left alone.
 Gains inside an RRSP/TFSA are performance only, not taxable. USD-priced
 holdings are shown in USD on their own row and left out of the CAD totals.
 
@@ -122,6 +134,37 @@ is its CAD book value (`book_cost_cad`), not the USD one; cash, crypto, FTQ and
 RESP/FHSA aren't tracked, so account totals can run a little under the real
 ones; and a net loss exports as 0% gains because the planner has no field for
 a loss. "Locked-in RRSP" accounts are LIRA, not RRSP.
+
+Two more figures ride along. **Taxable income**: attaching a Manulife statement
+on the Import tab also reads its *Income Summary* (dividends and interest year
+to date) for the non-registered account and saves it (`etf_income_snapshots`);
+the export scales it to a full year and divides by the account's value for the
+planner's "taxable income each year" %. A December statement gives the exact
+year; earlier ones are scaled and flagged. **Monte Carlo volatility**: the
+nightly signal job already downloads each holding's price history, and now also
+measures how much the whole portfolio swings (`src/lib/portfolioVol.js`: monthly
+total returns blended with today's value weights, annualized, latest 60 months)
+into `etf_portfolio_stats`. That replaces the planner's generic 10% with one
+measured from what you actually hold — actively managed funds included, since
+their own history already reflects their manager's choices. Funds with no
+Yahoo history can't be measured, so the export reports how much of the
+portfolio's value was. The first figure appears after the next nightly run
+(or run the *daily-signals* workflow by hand from the Actions tab).
+
+**Bell DC pension (Pension tab)**: a workplace pension has no ticker, so it is
+read from your Bell Benefits page instead. Choose a screenshot of the fund and
+contribution-type breakdown (or paste the page's text, or type the figures)
+and the Pension tab reads it on the device with OCR (`src/lib/ocr.js`,
+tesseract.js; the engine downloads once from a CDN, the image never leaves the
+phone), then `src/lib/bellPension.js` turns it into: the fund, units and
+market value per contribution type (employee / Bell), and each type's
+opening + contributions + earnings = market value. A type cropped out of the
+screenshot is worked out as the total minus the others. You confirm the
+figures and the period the contributions column covers (it isn't in the
+screenshot), and the snapshot is saved in `etf_pension_snapshots`. The planner
+export then carries it as the separate Bell DC pension balance and a yearly
+contribution (contributions ÷ the years in that period). The value is as of the
+snapshot, so add a new one about once a year; the export warns when it is old.
 
 The review shows a per-fund diff: **add** for funds that appeared, **adjust**
 where the unit count moved, **remove** for funds on file but absent from the
