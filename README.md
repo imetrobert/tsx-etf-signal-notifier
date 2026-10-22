@@ -150,6 +150,13 @@ their own history already reflects their manager's choices. Funds with no
 Yahoo history can't be measured, so the export reports how much of the
 portfolio's value was. The first figure appears after the next nightly run
 (or run the *daily-signals* workflow by hand from the Actions tab).
+The same measurement also records a year-by-year second opinion (the portfolio's
+actual calendar-year returns, a rolling 12-month spread, and a longer look-back
+of up to ten years), because scaling monthly swings up can understate how far a
+trending market moves in a year. The planner export carries it as `portfolioStats`
+so the planner can lock its Monte Carlo volatility to it (*My portfolio's own
+history*), show the yearly returns behind the number, and offer *Repeatable
+results* (a fixed random stream, so the same inputs always give the same result).
 
 **Bell DC pension (Pension tab)**: a workplace pension has no ticker, so it is
 read from your Bell Benefits page instead. Choose a screenshot of the fund and
