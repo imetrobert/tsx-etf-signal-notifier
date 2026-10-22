@@ -207,7 +207,7 @@ export default function Dashboard() {
       ? { snapshotDate: pensionSnap.snapshot_date, periodStart: pensionSnap.period_start, fundName: pensionSnap.fund_name, types: pensionSnap.types || [] }
       : null,
     volatility: volStats
-      ? { annualVol: Number(volStats.annual_vol), months: volStats.months, windowStart: volStats.window_start, windowEnd: volStats.window_end, coverage: volStats.coverage == null ? null : Number(volStats.coverage), worst12m: volStats.worst_12m == null ? null : Number(volStats.worst_12m), updatedAt: volStats.updated_at }
+      ? { annualVol: Number(volStats.annual_vol), months: volStats.months, windowStart: volStats.window_start, windowEnd: volStats.window_end, coverage: volStats.coverage == null ? null : Number(volStats.coverage), history: (volStats.details || {}).history || null, worst12m: volStats.worst_12m == null ? null : Number(volStats.worst_12m), updatedAt: volStats.updated_at }
       : null,
   })
   const plannerJson = JSON.stringify(plannerExport, null, 2)
@@ -676,6 +676,12 @@ export default function Dashboard() {
                   ({plannerExport.volatility.window}), {plannerExport.volatility.coveragePct}% of value measured
                   {plannerExport.volatility.worst12mPct != null ? ` · worst 12 months ${plannerExport.volatility.worst12mPct}%` : ''}
                 </div>
+                {plannerExport.portfolioStats && (
+                  <div className="muted">
+                    Year-by-year check: {plannerExport.portfolioStats.calendarYearVolPct != null ? `${plannerExport.portfolioStats.calendarYearVolPct}% across ${plannerExport.portfolioStats.calendarYears.length} calendar years` : 'not enough full years yet'}
+                    {plannerExport.portfolioStats.volLongPct != null ? ` · ${plannerExport.portfolioStats.volLongPct}% over the longest history (${Math.round(plannerExport.portfolioStats.monthsLong / 12 * 10) / 10} yrs)` : ''}
+                  </div>
+                )}
               </div>
             )}
             {plannerExport.warnings.map((w, i) => <div key={i} className="notice" style={{ marginTop: 8 }}>{w}</div>)}
