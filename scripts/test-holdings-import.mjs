@@ -327,6 +327,16 @@ console.log('\nretirement planner export')
   check('thin coverage is disclosed', buildPlannerExport(nr100k, { now, volatility: vol(0.09, { coverage: 0.45 }) }).warnings.some(w => /45%/.test(w)), true)
   check('a short history is disclosed', buildPlannerExport(nr100k, { now, volatility: vol(0.09, { months: 28 }) }).warnings.some(w => /28 months/.test(w)), true)
   check('a stale measurement is disclosed', buildPlannerExport(nr100k, { now, volatility: vol(0.09, { updatedAt: '2026-09-01T00:00:00Z' }) }).warnings.some(w => /nightly job may not be running/.test(w)), true)
+  // ---- the package the planner stores to lock its volatility to the portfolio's own history ----
+  const hist = { annualVolLong: 0.101, monthsLong: 120, windowLongStart: '2016-10', rolling12Vol: 0.082, rolling12Count: 49, calendarYears: [{ year: 2022, return: -0.081 }, { year: 2023, return: 0.092 }, { year: 2024, return: 0.121 }, { year: 2025, return: 0.075 }, { year: 2021, return: 0.139 }], calendarYearVol: 0.085, meanAnnual: 0.0652, geoAnnual: 0.0622 }
+  const ps = buildPlannerExport(nr100k, { now, volatility: vol(0.0874, { history: hist }) }).portfolioStats
+  check('the stats package carries both volatility figures', [ps.volPct, ps.volLongPct, ps.calendarYearVolPct, ps.rolling12VolPct], [8.7, 10.1, 8.5, 8.2])
+  check('and the year-by-year returns, in percent', ps.calendarYears.find(y => y.year === 2022), { year: 2022, returnPct: -8.1 })
+  check('and the basis (window, coverage, when measured)', [ps.window, ps.coveragePct, ps.months, ps.asOf], ['2021-10 to 2026-09', 90, 60, '2026-10-16T05:00:00Z'])
+  check('no history means no stats package, and the planner keeps its own', buildPlannerExport(nr100k, { now, volatility: vol(0.0874) }).portfolioStats, null)
+  check('a long history that is much choppier year to year is flagged', buildPlannerExport(nr100k, { now, volatility: vol(0.0874, { history: { ...hist, calendarYearVol: 0.19 } }) }).warnings.some(w => /Year-to-year swings/.test(w)), true)
+  check('a calm year-by-year record is not flagged', buildPlannerExport(nr100k, { now, volatility: vol(0.0874, { history: hist }) }).warnings.some(w => /Year-to-year swings/.test(w)), false)
+  check('a too-short calendar record is not flagged either', buildPlannerExport(nr100k, { now, volatility: vol(0.0874, { history: { ...hist, calendarYears: hist.calendarYears.slice(0, 3), calendarYearVol: 0.3 } }) }).warnings.some(w => /Year-to-year swings/.test(w)), false)
   check('an absurd figure is capped at 40%', buildPlannerExport(nr100k, { now, volatility: vol(0.9) }).planner.mcVolatility, 40)
   check('CAD holding falls back to book_cost when no CAD cost column', buildPlannerExport([row('NON_REG', 100, null, { book_cost: 60 })], { now }).accounts.NON_REG.acb, 60)
 }
@@ -398,6 +408,29 @@ console.log('\nportfolio volatility')
   ], { now })
   check('a young fund still lets the old history be used', young.months >= 50, true)
   check('per-holding detail is returned', young.perHolding.map(h => h.ticker), ['OLD', 'NEW'])
+  // ---- the year-by-year second opinion ----
+  const h10 = portfolioVolatility([{ ticker: 'A', value: 1000, series: long }], { now })
+  check('a long history gives a longer-window figure too', h10.history.monthsLong >= 119 && h10.history.annualVolLong > 0.09 && h10.history.annualVolLong < 0.15, true)
+  check('only complete calendar years are listed', h10.history.calendarYears.every(y => Number.isInteger(y.year)) && h10.history.calendarYears.length >= 8 && h10.history.calendarYears.length <= 10, true)
+  check('calendar years run oldest to newest, with no partial year', h10.history.calendarYears.map(y => y.year).every((y, i, a) => i === 0 || y === a[i - 1] + 1) && !h10.history.calendarYears.some(y => y.year === 2026), true)
+  check('rolling 12-month windows: one per month after the first eleven (60 months → 49)', h10.history.rolling12Count, 49)
+  check('year-by-year spread is of the same order for independent months', h10.history.calendarYearVol > 0.05 && h10.history.calendarYearVol < 0.25, true)
+  check('too little history gives no long-window or calendar-year figure', (() => { const s = portfolioVolatility([{ ticker: 'Y', value: 1, series: build(gen(0.1, 40), 40) }], { now }); return [s.history.annualVolLong, s.history.calendarYearVol] })(), [null, null])
+
+  // Trending markets: a run of good years then bad ones. Month-to-month wiggle is small, but years swing a lot —
+  // exactly where scaling monthly volatility up understates the real year-to-year risk.
+  const trendSeries = (() => {
+    const out = []; let px = 100
+    for (let k = 0; k <= 120; k++) {
+      const d = new Date(Date.UTC(2016, 8 + k, 15))
+      if (k > 0) px *= 1 + (d.getUTCFullYear() % 2 === 0 ? 0.02 : -0.018)   // good calendar years, then bad ones
+      out.push({ date: d, close: px })
+    }
+    return out
+  })()
+  const tr = portfolioVolatility([{ ticker: 'T', value: 1, series: trendSeries }], { now })
+  check('trending history: the year-by-year spread is far larger than the monthly figure scaled up', tr.history.calendarYearVol > tr.annualVol * 2, true)
+  check('and the average calendar-year return is carried', typeof tr.history.meanAnnual === 'number' && typeof tr.history.geoAnnual === 'number' && tr.history.geoAnnual <= tr.history.meanAnnual, true)
   check('a worst-12-month figure is provided', typeof one.worst12m === 'number' && one.worst12m < 0.2, true)
 }
 

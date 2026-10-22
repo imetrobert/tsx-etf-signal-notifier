@@ -538,7 +538,7 @@ async function main() {
         window_end: vol.windowEnd,
         coverage: Math.round(vol.coverage * 1000) / 1000,
         worst_12m: vol.worst12m == null ? null : Math.round(vol.worst12m * 10000) / 10000,
-        details: { covered: vol.covered, uncovered: vol.uncovered, perHolding: vol.perHolding },
+        details: { covered: vol.covered, uncovered: vol.uncovered, perHolding: vol.perHolding, history: vol.history },
         updated_at: new Date().toISOString(),
       })
       if (vErr) console.error(`portfolio volatility save failed (run supabase/schema.sql to add the table): ${vErr.message}`)
