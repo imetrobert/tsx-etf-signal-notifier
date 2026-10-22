@@ -16,7 +16,9 @@
 //
 // volatility (optional): the nightly job's measure of how much the whole
 //   portfolio swings — { annualVol (0.087 = 8.7%), months, windowStart,
-//   windowEnd, coverage (0–1), worst12m, updatedAt }. It becomes the Monte
+//   windowEnd, coverage (0–1), worst12m, updatedAt, history }, where history is
+//   the year-by-year second opinion from portfolioVol.js (calendar-year returns,
+//   a longer-window figure, rolling 12-month spread). It becomes the Monte
 //   Carlo's "annual volatility", replacing a generic guess with one measured
 //   from what is actually held.
 //
@@ -135,6 +137,7 @@ export function buildPlannerExport(rows, { usdCad, income = null, volatility = n
   // Monte Carlo volatility, measured from the real holdings.
   let volPct = null
   let volDetail = null
+  let portfolioStats = null
   if (volatility && volatility.annualVol > 0) {
     volPct = Math.min(40, Math.max(0, Math.round(volatility.annualVol * 1000) / 10))
     volDetail = {
@@ -148,6 +151,29 @@ export function buildPlannerExport(rows, { usdCad, income = null, volatility = n
       warnings.push(`Only ${volDetail.coveragePct}% of your portfolio's value had price history (funds that only publish a daily price can't be measured), so the rest is assumed to swing like the part that was.`)
     }
     if (volatility.months < 36) warnings.push(`Volatility is based on only ${volatility.months} months of history, which can miss a bad stretch.`)
+    // What the portfolio actually did year to year, so the planner can show its evidence and offer a longer view.
+    const h = volatility.history
+    if (h) {
+      const pct1 = x => (x == null ? null : Math.round(x * 1000) / 10)
+      portfolioStats = {
+        asOf: volatility.updatedAt || null,
+        months: volatility.months,
+        window: `${volatility.windowStart} to ${volatility.windowEnd}`,
+        coveragePct: volDetail.coveragePct,
+        volPct,
+        volLongPct: h.annualVolLong == null ? null : Math.min(40, pct1(h.annualVolLong)),
+        monthsLong: h.monthsLong ?? null,
+        rolling12VolPct: pct1(h.rolling12Vol),
+        calendarYearVolPct: pct1(h.calendarYearVol),
+        calendarYears: (h.calendarYears || []).map(y => ({ year: y.year, returnPct: pct1(y.return) })),
+        meanAnnualPct: pct1(h.meanAnnual),
+        geoAnnualPct: pct1(h.geoAnnual),
+        worst12mPct: volDetail.worst12mPct,
+      }
+      if (h.calendarYearVol != null && (h.calendarYears || []).length >= 5 && h.calendarYearVol > volatility.annualVol * 1.25) {
+        warnings.push(`Year-to-year swings (${pct1(h.calendarYearVol)}%) have been larger than the monthly figure suggests (${volPct}%) — markets trended. The planner's “longest history” choice or a higher number would be more cautious.`)
+      }
+    }
     if (volatility.updatedAt) {
       const age = daysBetween(new Date(volatility.updatedAt), now)
       if (age > 14) warnings.push(`The volatility was measured ${age} days ago — the nightly job may not be running.`)
@@ -197,6 +223,7 @@ export function buildPlannerExport(rows, { usdCad, income = null, volatility = n
     usdCad: usdConverted > 0 ? usdCad : null,
     accounts: { ...accounts, NON_REG: { ...accounts.NON_REG, income: incomeDetail } },
     volatility: volDetail,
+    portfolioStats,
     pension: pensionDetail,
     // What the planner actually reads; everything above is for the person.
     planner: {

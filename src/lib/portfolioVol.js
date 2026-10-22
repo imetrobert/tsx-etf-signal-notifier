@@ -16,6 +16,9 @@
 // number for a distribution that really has fat tails.
 
 export const DEFAULT_WINDOW_MONTHS = 60
+// The longer look-back used for the year-by-year view and a second opinion on the volatility.
+export const LONG_WINDOW_MONTHS = 120
+const MIN_LONG_MONTHS = 84
 export const MIN_MONTHS = 24
 // A month only counts if holdings carrying at least this share of the
 // measured value have a return for it, so the blend doesn't lurch when a young
@@ -49,11 +52,43 @@ const sd = xs => {
   return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1))
 }
 
+const growth = rs => rs.reduce((acc, x) => acc * (1 + x), 1) - 1
+
+// Calendar years that have all twelve months, as { year, return }.
+function calendarYearReturns(months, returns) {
+  const byYear = new Map()
+  months.forEach((m, i) => {
+    const y = m.slice(0, 4)
+    if (!byYear.has(y)) byYear.set(y, [])
+    byYear.get(y).push(returns[i])
+  })
+  return [...byYear.entries()].filter(([, rs]) => rs.length === 12)
+    .map(([y, rs]) => ({ year: Number(y), return: growth(rs) }))
+}
+
+// Returns over every run of twelve consecutive calendar months in the data. Overlapping, so these are
+// not independent — a second look at the same history, not extra history.
+function rolling12Returns(months, returns) {
+  const idx = new Map(months.map((m, i) => [m, i]))
+  const out = []
+  months.forEach((m, i) => {
+    if (i < 11) return
+    const start = months[i - 11]
+    const [sy, sm] = start.split('-').map(Number), [ey, em] = m.split('-').map(Number)
+    if ((ey - sy) * 12 + (em - sm) !== 11) return // a gap inside the window
+    out.push(growth(returns.slice(i - 11, i + 1)))
+  })
+  return out
+}
+
 // items: [{ ticker, value, series | null }] — value is today's value (price ×
 // units); series is null/empty when no history could be fetched.
 // Returns null when there isn't enough to measure, else
-// { annualVol, months, windowStart, windowEnd, coverage, covered, uncovered, worst12m, perHolding }.
-export function portfolioVolatility(items, { windowMonths = DEFAULT_WINDOW_MONTHS, now = new Date() } = {}) {
+// { annualVol, months, windowStart, windowEnd, coverage, covered, uncovered, worst12m, perHolding, history }
+// where annualVol is over the latest windowMonths (60) and history adds a second opinion:
+//   annualVolLong (longest history, up to longMonths), rolling12Vol, calendarYears, calendarYearVol,
+//   meanAnnual / geoAnnual of the full calendar years — all for the SAME blend of today's holdings.
+export function portfolioVolatility(items, { windowMonths = DEFAULT_WINDOW_MONTHS, longMonths = LONG_WINDOW_MONTHS, now = new Date() } = {}) {
   const total = items.reduce((s, i) => s + (i.value > 0 ? i.value : 0), 0)
   if (!(total > 0)) return null
 
@@ -68,17 +103,23 @@ export function portfolioVolatility(items, { windowMonths = DEFAULT_WINDOW_MONTH
   if (!measured.length) return null
   const measuredValue = measured.reduce((s, i) => s + i.value, 0)
 
-  const allMonths = [...new Set(measured.flatMap(i => [...i.returns.keys()]))].sort().slice(-windowMonths)
-  const blended = []
-  const used = []
-  for (const m of allMonths) {
+  const unionMonths = [...new Set(measured.flatMap(i => [...i.returns.keys()]))].sort()
+  const blendMonth = m => {
     const here = measured.filter(i => i.returns.has(m))
     const share = here.reduce((s, i) => s + i.value, 0) / measuredValue
-    if (share < MIN_MONTH_SHARE) continue
+    if (share < MIN_MONTH_SHARE) return null
     const w = here.reduce((s, i) => s + i.value, 0)
-    blended.push(here.reduce((s, i) => s + i.value * i.returns.get(m), 0) / w)
-    used.push(m)
+    return here.reduce((s, i) => s + i.value * i.returns.get(m), 0) / w
   }
+  // One blended series over the longest look-back; the 60-month figures are its tail.
+  const longMonthsList = [], longReturns = []
+  for (const m of unionMonths.slice(-Math.max(longMonths, windowMonths))) {
+    const r = blendMonth(m)
+    if (r !== null) { longMonthsList.push(m); longReturns.push(r) }
+  }
+  const recentSet = new Set(unionMonths.slice(-windowMonths))
+  const used = [], blended = []
+  longMonthsList.forEach((m, i) => { if (recentSet.has(m)) { used.push(m); blended.push(longReturns[i]) } })
   if (blended.length < MIN_MONTHS) return null
 
   // Worst rolling 12 months, as a sanity figure alongside the volatility.
@@ -88,7 +129,24 @@ export function portfolioVolatility(items, { windowMonths = DEFAULT_WINDOW_MONTH
     if (worst12m === null || r < worst12m) worst12m = r
   }
 
+  // The second opinion: how big the year-to-year swings actually were, not just scaled up from months.
+  const recentIdx = longMonthsList.map((m, i) => ({ m, i })).filter(x => recentSet.has(x.m))
+  const rolling = rolling12Returns(recentIdx.map(x => x.m), recentIdx.map(x => longReturns[x.i]))
+  const years = calendarYearReturns(longMonthsList, longReturns)
+  const history = {
+    annualVolLong: longReturns.length >= MIN_LONG_MONTHS ? sd(longReturns) * Math.sqrt(12) : null,
+    monthsLong: longReturns.length,
+    windowLongStart: longMonthsList[0],
+    rolling12Vol: rolling.length >= 12 ? sd(rolling) : null,
+    rolling12Count: rolling.length,
+    calendarYears: years,
+    calendarYearVol: years.length >= 4 ? sd(years.map(y => y.return)) : null,
+    meanAnnual: years.length ? years.reduce((s, y) => s + y.return, 0) / years.length : null,
+    geoAnnual: years.length ? Math.pow(years.reduce((acc, y) => acc * (1 + y.return), 1), 1 / years.length) - 1 : null,
+  }
+
   return {
+    history,
     annualVol: sd(blended) * Math.sqrt(12),
     months: blended.length,
     windowStart: used[0],
