@@ -162,3 +162,27 @@ export function portfolioVolatility(items, { windowMonths = DEFAULT_WINDOW_MONTH
     }),
   }
 }
+
+// Turns the nightly job's raw rows into what portfolioVolatility measures: one item per ticker, valued at
+// today's price × the units held across all accounts, with its price history if one was fetched.
+//   holdingRows: [{ ticker, shares }]   priceRows: [{ ticker, price }]   seriesByTicker: { ticker: [...] }
+// Returns { items, problems }. problems says, in words, anything that would make the measure silently wrong
+// (the job logs it) — notably holdings that arrive without units, which values every one of them at nothing.
+export function volatilityItems(holdingRows, priceRows, seriesByTicker) {
+  const problems = []
+  const priceBy = Object.fromEntries((priceRows || []).map(r => [r.ticker, Number(r.price)]))
+  const unitsBy = {}
+  let noUnits = 0
+  for (const h of holdingRows || []) {
+    const units = Number(h.shares)
+    if (h.shares == null || !Number.isFinite(units)) { noUnits++; continue }
+    unitsBy[h.ticker] = (unitsBy[h.ticker] || 0) + units
+  }
+  if (noUnits) problems.push(`${noUnits} holding row(s) arrived without units (the holdings query must select "shares")`)
+  const items = Object.entries(unitsBy).map(([ticker, units]) => ({
+    ticker, value: (priceBy[ticker] > 0 ? priceBy[ticker] : 0) * units, series: (seriesByTicker || {})[ticker] || null,
+  }))
+  const unpriced = items.filter(i => !(i.value > 0)).map(i => i.ticker)
+  if (unpriced.length) problems.push(`no price on file for ${unpriced.join(', ')}`)
+  return { items, problems }
+}

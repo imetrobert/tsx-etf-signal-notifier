@@ -179,7 +179,7 @@ export function buildPlannerExport(rows, { usdCad, income = null, volatility = n
       if (age > 14) warnings.push(`The volatility was measured ${age} days ago — the nightly job may not be running.`)
     }
   } else {
-    warnings.push('No portfolio volatility measured yet (the nightly job computes it from your holdings’ price history), so the planner keeps its own figure.')
+    warnings.push('No portfolio volatility measured yet (the nightly job computes it from your holdings’ price history — see the “Portfolio volatility:” line in the latest “Daily ETF signals” run), so the planner keeps its own figure.')
   }
 
   // Bell DC pension: its own entry in the planner, from the latest snapshot.
