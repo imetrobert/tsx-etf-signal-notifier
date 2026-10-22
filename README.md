@@ -148,8 +148,13 @@ into `etf_portfolio_stats`. That replaces the planner's generic 10% with one
 measured from what you actually hold — actively managed funds included, since
 their own history already reflects their manager's choices. Funds with no
 Yahoo history can't be measured, so the export reports how much of the
-portfolio's value was. The first figure appears after the next nightly run
-(or run the *daily-signals* workflow by hand from the Actions tab).
+portfolio's value was. The first figure appears after the next run of the **Daily ETF signals** workflow
+(it runs hourly on weekdays; or use *Run workflow* on it in the Actions tab). Its
+log has a `Portfolio volatility:` line saying what was measured, how much of the
+portfolio's value had history, and which holdings had none — or why it could not
+be measured. `node scripts/test-job.mjs` runs the real job against a simulated
+database and Yahoo and checks that row is written (it also proves the test would
+catch the job forgetting to select the units it weights holdings by).
 The same measurement also records a year-by-year second opinion (the portfolio's
 actual calendar-year returns, a rolling 12-month spread, and a longer look-back
 of up to ten years), because scaling monthly swings up can understate how far a
