@@ -12,7 +12,7 @@ import {
 } from '../src/lib/funds.js'
 import { parseStatementLines, buildCostIndex } from '../src/lib/statementCost.js'
 import { buildPlannerExport } from '../src/lib/plannerExport.js'
-import { monthlyReturns, portfolioVolatility } from '../src/lib/portfolioVol.js'
+import { monthlyReturns, portfolioVolatility, volatilityItems } from '../src/lib/portfolioVol.js'
 import { yearsHeld, annualizedReturn, formatHeld, summarizeReturn } from '../src/lib/returns.js'
 import { parseBellText, pensionMetrics, pensionChecks } from '../src/lib/bellPension.js'
 import { parseHoldingsExport, toYahooSymbol, detectInstitution, accountTypeFor } from '../src/lib/holdingsExport.js'
@@ -431,6 +431,18 @@ console.log('\nportfolio volatility')
   const tr = portfolioVolatility([{ ticker: 'T', value: 1, series: trendSeries }], { now })
   check('trending history: the year-by-year spread is far larger than the monthly figure scaled up', tr.history.calendarYearVol > tr.annualVol * 2, true)
   check('and the average calendar-year return is carried', typeof tr.history.meanAnnual === 'number' && typeof tr.history.geoAnnual === 'number' && tr.history.geoAnnual <= tr.history.meanAnnual, true)
+  // ---- what the nightly job feeds the measure: units × price per ticker, with loud diagnostics ----
+  const ser = { A: [1], B: [2] }
+  const vi = volatilityItems([{ ticker: 'A', shares: 10 }, { ticker: 'A', shares: 5 }, { ticker: 'B', shares: 2 }], [{ ticker: 'A', price: 3 }, { ticker: 'B', price: 10 }], ser)
+  check('a ticker held in several accounts is one item, valued at all its units', vi.items.map(i => [i.ticker, i.value]), [['A', 45], ['B', 20]])
+  check('its price history is attached by ticker', vi.items.map(i => i.series), [[1], [2]])
+  check('a clean set of rows has no problems', vi.problems, [])
+  const noUnits = volatilityItems([{ ticker: 'A' }, { ticker: 'B' }], [{ ticker: 'A', price: 3 }, { ticker: 'B', price: 10 }], ser)
+  check('holdings that arrive without units are reported in words, not silently valued at nothing', noUnits.problems.some(p => /without units.*select "shares"/.test(p)), true)
+  check('and never produce a not-a-number value', noUnits.items.every(i => Number.isFinite(i.value)), true)
+  const unpriced = volatilityItems([{ ticker: 'A', shares: 10 }, { ticker: 'C', shares: 4 }], [{ ticker: 'A', price: 3 }], ser)
+  check('a holding with no price is valued at zero and named', [unpriced.items.find(i => i.ticker === 'C').value, unpriced.problems.some(p => /no price on file for C/.test(p))], [0, true])
+  check('missing rows and prices do not throw', volatilityItems(undefined, undefined, undefined), { items: [], problems: [] })
   check('a worst-12-month figure is provided', typeof one.worst12m === 'number' && one.worst12m < 0.2, true)
 }
 

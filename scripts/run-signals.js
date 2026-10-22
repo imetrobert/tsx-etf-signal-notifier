@@ -10,7 +10,7 @@
 //      EMAILJS_PRIVATE_KEY, NOTIFY_EMAIL (optional — email is skipped if absent)
 
 import { createClient } from '@supabase/supabase-js'
-import { portfolioVolatility } from '../src/lib/portfolioVol.js'
+import { portfolioVolatility, volatilityItems } from '../src/lib/portfolioVol.js'
 
 const STRETCH_PCT = 10 // alert when price is this % above/below its 200-day MA
 
@@ -392,7 +392,8 @@ async function sendEmail(signals, regime, regimeChange) {
 
 async function main() {
   const [holdings, watchlist, states] = await Promise.all([
-    db.from('etf_holdings').select('ticker, account, institution, fund_name'),
+    // shares is needed to weight each holding in the portfolio-volatility measure below.
+    db.from('etf_holdings').select('ticker, account, institution, fund_name, shares'),
     db.from('etf_watchlist').select('ticker'),
     db.from('etf_signal_state').select('*'),
   ])
@@ -439,6 +440,8 @@ async function main() {
   for (const ticker of tickers) {
     try {
       const { series, currency, name: yahooName } = await fetchHistory(ticker)
+      // Keep it now: nothing later in this ticker's turn should be able to drop it from the volatility measure.
+      if (heldTickers.has(ticker)) heldSeries[ticker] = series
       const name = nicknameByTicker[ticker] || yahooName || null
 
       // Backfill a missing holding nickname from Yahoo's own name for the
@@ -451,7 +454,6 @@ async function main() {
         if (nameErr) console.warn(`  fund_name backfill failed for ${ticker}: ${nameErr.message}`)
       }
 
-      if (heldTickers.has(ticker)) heldSeries[ticker] = series
       const ind = computeIndicators(series)
       const { stateKey, signal: rawSignal } = evaluate(ticker, assetLabel(ticker, name), ind, lastStates[ticker] ?? null, series)
       // A SELL/trim alert is meaningless for something not actually owned —
@@ -520,14 +522,10 @@ async function main() {
   try {
     const { data: priceRows, error: prErr } = await db.from('etf_prices').select('ticker, price')
     if (prErr) throw new Error(prErr.message)
-    const priceBy = Object.fromEntries((priceRows || []).map(r => [r.ticker, Number(r.price)]))
-    const unitsBy = {}
-    for (const h of holdings.data) unitsBy[h.ticker] = (unitsBy[h.ticker] || 0) + Number(h.shares)
     // Values are in each security's own currency (not FX-converted); US-listed
     // holdings are a small share, so the weights are close enough for this.
-    const items = Object.entries(unitsBy).map(([ticker, units]) => ({
-      ticker, value: (priceBy[ticker] || 0) * units, series: heldSeries[ticker] || null,
-    }))
+    const { items, problems } = volatilityItems(holdings.data, priceRows, heldSeries)
+    problems.forEach(p => console.error(`portfolio volatility input problem: ${p}`))
     const vol = portfolioVolatility(items)
     if (vol) {
       const { error: vErr } = await db.from('etf_portfolio_stats').upsert({
@@ -544,7 +542,8 @@ async function main() {
       if (vErr) console.error(`portfolio volatility save failed (run supabase/schema.sql to add the table): ${vErr.message}`)
       else console.log(`Portfolio volatility: ${(vol.annualVol * 100).toFixed(1)}% a year over ${vol.months} months, ${Math.round(vol.coverage * 100)}% of value measured${vol.uncovered.length ? ` (no history: ${vol.uncovered.join(', ')})` : ''}`)
     } else {
-      console.log('Portfolio volatility: not enough price history to measure.')
+      const withHistory = items.filter(i => i.series && i.series.length).length
+      console.log(`Portfolio volatility: could not be measured — ${withHistory} of ${items.length} holdings had usable price history${problems.length ? ' (' + problems.join('; ') + ')' : ''}.`)
     }
   } catch (e) {
     console.error(`portfolio volatility skipped: ${e.message}`)
