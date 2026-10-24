@@ -81,8 +81,10 @@ function rolling12Returns(months, returns) {
   return out
 }
 
-// items: [{ ticker, value, series | null }] — value is today's value (price ×
-// units); series is null/empty when no history could be fetched.
+// items: [{ ticker, value, series | null, proxy?, name? }] — value is today's value (price ×
+// units); series is null/empty when no history could be fetched. An item whose series is a
+// stand-in ETF's history carries proxy: that ETF's ticker, so what is measured from the holding's
+// own history and what is estimated through a proxy are reported apart (ownCoverage / proxied).
 // Returns null when there isn't enough to measure, else
 // { annualVol, months, windowStart, windowEnd, coverage, covered, uncovered, worst12m, perHolding, history }
 // where annualVol is over the latest windowMonths (60) and history adds a second opinion:
@@ -153,12 +155,15 @@ export function portfolioVolatility(items, { windowMonths = DEFAULT_WINDOW_MONTH
     windowEnd: used[used.length - 1],
     // Share of the portfolio's value that could be measured at all.
     coverage: measuredValue / total,
+    // The part of that which is the holdings' own history, and the part estimated through stand-in ETFs.
+    ownCoverage: measured.filter(i => !i.proxy).reduce((s, i) => s + i.value, 0) / total,
+    proxied: measured.filter(i => i.proxy).map(i => ({ ticker: i.ticker, name: i.name || null, proxy: i.proxy, why: i.proxyWhy || null, share: i.value / total })),
     covered: measured.map(i => i.ticker),
     uncovered,
     worst12m,
     perHolding: measured.map(i => {
       const r = [...i.returns.entries()].filter(([m]) => used.includes(m)).map(([, v]) => v)
-      return { ticker: i.ticker, weight: i.value / measuredValue, vol: r.length > 2 ? sd(r) * Math.sqrt(12) : null }
+      return { ticker: i.ticker, weight: i.value / measuredValue, vol: r.length > 2 ? sd(r) * Math.sqrt(12) : null, proxy: i.proxy || null }
     }),
   }
 }
@@ -169,6 +174,7 @@ export function portfolioVolatility(items, { windowMonths = DEFAULT_WINDOW_MONTH
 // Returns { items, problems }. problems says, in words, anything that would make the measure silently wrong
 // (the job logs it) — notably holdings that arrive without units, which values every one of them at nothing.
 export function volatilityItems(holdingRows, priceRows, seriesByTicker) {
+  const nameBy = {}
   const problems = []
   const priceBy = Object.fromEntries((priceRows || []).map(r => [r.ticker, Number(r.price)]))
   const unitsBy = {}
@@ -177,10 +183,11 @@ export function volatilityItems(holdingRows, priceRows, seriesByTicker) {
     const units = Number(h.shares)
     if (h.shares == null || !Number.isFinite(units)) { noUnits++; continue }
     unitsBy[h.ticker] = (unitsBy[h.ticker] || 0) + units
+    if (h.fund_name && !nameBy[h.ticker]) nameBy[h.ticker] = h.fund_name
   }
   if (noUnits) problems.push(`${noUnits} holding row(s) arrived without units (the holdings query must select "shares")`)
   const items = Object.entries(unitsBy).map(([ticker, units]) => ({
-    ticker, value: (priceBy[ticker] > 0 ? priceBy[ticker] : 0) * units, series: (seriesByTicker || {})[ticker] || null,
+    ticker, name: nameBy[ticker] || null, value: (priceBy[ticker] > 0 ? priceBy[ticker] : 0) * units, series: (seriesByTicker || {})[ticker] || null,
   }))
   const unpriced = items.filter(i => !(i.value > 0)).map(i => i.ticker)
   if (unpriced.length) problems.push(`no price on file for ${unpriced.join(', ')}`)

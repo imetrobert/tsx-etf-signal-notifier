@@ -16,7 +16,9 @@
 //
 // volatility (optional): the nightly job's measure of how much the whole
 //   portfolio swings — { annualVol (0.087 = 8.7%), months, windowStart,
-//   windowEnd, coverage (0–1), worst12m, updatedAt, history }, where history is
+//   windowEnd, coverage (0–1), ownCoverage (0–1, the part measured from the holdings' own
+//   history; the rest of coverage is estimated through stand-in ETFs), proxied, unproxied,
+//   worst12m, updatedAt, history }, where history is
 //   the year-by-year second opinion from portfolioVol.js (calendar-year returns,
 //   a longer-window figure, rolling 12-month spread). It becomes the Monte
 //   Carlo's "annual volatility", replacing a generic guess with one measured
@@ -145,10 +147,19 @@ export function buildPlannerExport(rows, { usdCad, income = null, volatility = n
       months: volatility.months,
       window: `${volatility.windowStart} to ${volatility.windowEnd}`,
       coveragePct: Math.round((volatility.coverage ?? 1) * 100),
+      ownCoveragePct: Math.round((volatility.ownCoverage ?? volatility.coverage ?? 1) * 100),
       worst12mPct: volatility.worst12m == null ? null : Math.round(volatility.worst12m * 1000) / 10,
     }
+    const proxyPct = volDetail.coveragePct - volDetail.ownCoveragePct
+    if (proxyPct > 0) {
+      const used = [...new Set((volatility.proxied || []).map(p => p.proxy))]
+      warnings.push(`${proxyPct}% of your portfolio is funds with no price history of their own, so index ETFs with the same mandate stand in for them (${used.join(', ')}). That captures asset-class swings, not each manager's own record.`)
+    }
     if ((volatility.coverage ?? 1) < 0.7) {
-      warnings.push(`Only ${volDetail.coveragePct}% of your portfolio's value had price history (funds that only publish a daily price can't be measured), so the rest is assumed to swing like the part that was.`)
+      warnings.push(`Only ${volDetail.coveragePct}% of your portfolio's value could be measured (the rest has no price history and no stand-in), so it is assumed to swing like the part that was.`)
+    }
+    if ((volatility.unproxied || []).length) {
+      warnings.push(`Not measured: ${volatility.unproxied.slice(0, 6).join('; ')}${volatility.unproxied.length > 6 ? `; and ${volatility.unproxied.length - 6} more` : ''}.`)
     }
     if (volatility.months < 36) warnings.push(`Volatility is based on only ${volatility.months} months of history, which can miss a bad stretch.`)
     // What the portfolio actually did year to year, so the planner can show its evidence and offer a longer view.
@@ -160,6 +171,10 @@ export function buildPlannerExport(rows, { usdCad, income = null, volatility = n
         months: volatility.months,
         window: `${volatility.windowStart} to ${volatility.windowEnd}`,
         coveragePct: volDetail.coveragePct,
+        ownCoveragePct: volDetail.ownCoveragePct,
+        proxyPct,
+        proxied: (volatility.proxied || []).slice(0, 15).map(p => ({ name: p.name || p.ticker, proxy: p.proxy, sharePct: Math.round((p.share || 0) * 1000) / 10 })),
+        unmeasured: (volatility.unproxied || []).slice(0, 10),
         volPct,
         volLongPct: h.annualVolLong == null ? null : Math.min(40, pct1(h.annualVolLong)),
         monthsLong: h.monthsLong ?? null,
