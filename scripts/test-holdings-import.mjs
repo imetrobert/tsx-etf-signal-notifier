@@ -13,6 +13,7 @@ import {
 import { parseStatementLines, buildCostIndex } from '../src/lib/statementCost.js'
 import { buildPlannerExport } from '../src/lib/plannerExport.js'
 import { monthlyReturns, portfolioVolatility, volatilityItems } from '../src/lib/portfolioVol.js'
+import { proxyFor, PROXY_OVERRIDES } from '../src/lib/fundProxies.js'
 import { yearsHeld, annualizedReturn, formatHeld, summarizeReturn } from '../src/lib/returns.js'
 import { parseBellText, pensionMetrics, pensionChecks } from '../src/lib/bellPension.js'
 import { parseHoldingsExport, toYahooSymbol, detectInstitution, accountTypeFor } from '../src/lib/holdingsExport.js'
@@ -321,7 +322,7 @@ console.log('\nretirement planner export')
   // ---- Monte Carlo volatility ----
   const vol = (annualVol, extra = {}) => ({ annualVol, months: 60, windowStart: '2021-10', windowEnd: '2026-09', coverage: 0.9, worst12m: -0.08, updatedAt: '2026-10-16T05:00:00Z', ...extra })
   check('measured volatility becomes the Monte Carlo figure (as a percent, one decimal)', buildPlannerExport(nr100k, { now, volatility: vol(0.0874) }).planner.mcVolatility, 8.7)
-  check('its basis is carried for display', buildPlannerExport(nr100k, { now, volatility: vol(0.0874) }).volatility, { annualVolPct: 8.7, months: 60, window: '2021-10 to 2026-09', coveragePct: 90, worst12mPct: -8 })
+  check('its basis is carried for display', buildPlannerExport(nr100k, { now, volatility: vol(0.0874) }).volatility, { annualVolPct: 8.7, months: 60, window: '2021-10 to 2026-09', coveragePct: 90, ownCoveragePct: 90, worst12mPct: -8 })
   check('no measurement leaves the field out so the planner keeps its own', buildPlannerExport(nr100k, { now }).planner.mcVolatility, null)
   check('and says why', buildPlannerExport(nr100k, { now }).warnings.some(w => /No portfolio volatility measured/.test(w)), true)
   check('thin coverage is disclosed', buildPlannerExport(nr100k, { now, volatility: vol(0.09, { coverage: 0.45 }) }).warnings.some(w => /45%/.test(w)), true)
@@ -337,6 +338,15 @@ console.log('\nretirement planner export')
   check('a long history that is much choppier year to year is flagged', buildPlannerExport(nr100k, { now, volatility: vol(0.0874, { history: { ...hist, calendarYearVol: 0.19 } }) }).warnings.some(w => /Year-to-year swings/.test(w)), true)
   check('a calm year-by-year record is not flagged', buildPlannerExport(nr100k, { now, volatility: vol(0.0874, { history: hist }) }).warnings.some(w => /Year-to-year swings/.test(w)), false)
   check('a too-short calendar record is not flagged either', buildPlannerExport(nr100k, { now, volatility: vol(0.0874, { history: { ...hist, calendarYears: hist.calendarYears.slice(0, 3), calendarYearVol: 0.3 } }) }).warnings.some(w => /Year-to-year swings/.test(w)), false)
+  // ---- stand-ins in the export ----
+  const viaEtf = vol(0.0874, { history: hist, coverage: 0.95, ownCoverage: 0.35, proxied: [{ ticker: 'F1', name: 'Fidelity Insights', proxy: 'XEQT.TO', share: 0.4 }, { ticker: 'F2', name: 'Dynamic Premium Balanced', proxy: 'XBAL.TO', share: 0.2 }], unproxied: ['RBC Q Market Neutral (market-neutral funds are built not to move like any index)'] })
+  const ve = buildPlannerExport(nr100k, { now, volatility: viaEtf })
+  check('the stats say how much is own history and how much is through stand-ins', [ve.portfolioStats.coveragePct, ve.portfolioStats.ownCoveragePct, ve.portfolioStats.proxyPct], [95, 35, 60])
+  check('and which funds, with what stood in for each', ve.portfolioStats.proxied, [{ name: 'Fidelity Insights', proxy: 'XEQT.TO', sharePct: 40 }, { name: 'Dynamic Premium Balanced', proxy: 'XBAL.TO', sharePct: 20 }])
+  check('and what was left out', ve.portfolioStats.unmeasured.length, 1)
+  check('the warning is honest that this is asset-class risk, not the manager\'s record', ve.warnings.some(w => /60% of your portfolio is funds with no price history of their own/.test(w) && /not each manager's own record/.test(w)), true)
+  check('unmeasured funds are named', ve.warnings.some(w => /Not measured: RBC Q Market Neutral/.test(w)), true)
+  check('without stand-ins there is no stand-in warning', buildPlannerExport(nr100k, { now, volatility: vol(0.0874, { history: hist }) }).warnings.some(w => /stand in/.test(w)), false)
   check('an absurd figure is capped at 40%', buildPlannerExport(nr100k, { now, volatility: vol(0.9) }).planner.mcVolatility, 40)
   check('CAD holding falls back to book_cost when no CAD cost column', buildPlannerExport([row('NON_REG', 100, null, { book_cost: 60 })], { now }).accounts.NON_REG.acb, 60)
 }
@@ -443,6 +453,33 @@ console.log('\nportfolio volatility')
   const unpriced = volatilityItems([{ ticker: 'A', shares: 10 }, { ticker: 'C', shares: 4 }], [{ ticker: 'A', price: 3 }], ser)
   check('a holding with no price is valued at zero and named', [unpriced.items.find(i => i.ticker === 'C').value, unpriced.problems.some(p => /no price on file for C/.test(p))], [0, true])
   check('missing rows and prices do not throw', volatilityItems(undefined, undefined, undefined), { items: [], problems: [] })
+  // ---- stand-in ETFs for funds with no history of their own ----
+  const pf = n => { const r = proxyFor({ name: n }); return r ? r.proxy : 'no rule' }
+  check('the funds on a Manulife statement map to sensible stand-ins (raw statement names)', [
+    'CIG GLB EQ CC CL F -NL', 'FDLTY GLB INC CL PORT SR F -NL', 'GOC AA PRT CLS SR F -NL', 'MMF MLF DIV INC CL -NL', 'MMF MLF GLB MO HI INC CL -NL',
+    'FDLTY GLOBAL EQUITY+ SR F -NL', 'FDLTY INSIG CL SR F -NL', 'BMO TACT GLB EQ ETF -NL', 'CCM TRGT CLICK 2030 FUND F -NL',
+    'CI PREC MTL FD CL F -NL', 'DYNAMIC PREM BAL PP CL F -NL', 'TDB US DISP E ALPHA SR F -NL',
+  ].map(pf), ['XEQT.TO', 'XBAL.TO', 'XBAL.TO', 'XDV.TO', 'XBAL.TO', 'XEQT.TO', 'XEQT.TO', 'XEQT.TO', 'XBAL.TO', 'XGD.TO', 'XBAL.TO', 'XUU.TO'])
+  check('the same funds under the expanded names the app shows', [
+    'Fidelity Insights Class Series F -NL', 'Canoe Asset Allocation Portfolio Class Series F -NL', 'Manulife Global Monthly High Income Class', 'Manulife Dividend Income Class', 'Fidelity Global Equity+ Series F',
+  ].map(pf), ['XEQT.TO', 'XBAL.TO', 'XBAL.TO', 'XDV.TO', 'XEQT.TO'])
+  check('a market-neutral fund gets NO stand-in (an equity ETF would be actively wrong), and says why', (() => { const r = proxyFor({ name: 'RBF Q MN WE CL F -NL' }); return [r.proxy, /market-neutral/.test(r.why)] })(), [null, true])
+  check('a fund the rules do not recognise is left alone rather than guessed', proxyFor({ name: 'CIG FD CL F -NL' }), null)
+  check('a cash/savings fund is recognised', pf('BNS INV SAV ACT SR A -NL'), 'CASH.TO')
+  check('an ordinary company or ETF name is not mistaken for a balanced fund', [pf('BCE INC NEW'), pf('VANGUARD GLOBAL VALUE ETF UN')], ['no rule', 'no rule'])
+  PROXY_OVERRIDES['FID5494'] = 'XUU.TO'; PROXY_OVERRIDES['SOME BALANCED FUND'] = null
+  check('an override by fund code beats the rules', proxyFor({ ticker: 'FID5494', name: 'FDLTY INSIG CL SR F -NL' }).proxy, 'XUU.TO')
+  check('an override of null switches a fund off, whatever the rules say', proxyFor({ name: 'Some Balanced Fund' }).proxy, null)
+  delete PROXY_OVERRIDES['FID5494']; delete PROXY_OVERRIDES['SOME BALANCED FUND']
+  check('removing the override restores the rule', proxyFor({ ticker: 'FID5494', name: 'FDLTY INSIG CL SR F -NL' }).proxy, 'XEQT.TO')
+
+  // measured from their own history vs through a stand-in: reported apart
+  const own = portfolioVolatility([{ ticker: 'A', value: 600, series: build(gen(0.10)) }, { ticker: 'F', value: 300, series: build(gen(0.09)), proxy: 'XEQT.TO', name: 'Some Fund' }, { ticker: 'N', value: 100, series: null }], { now })
+  check('coverage counts stand-ins, own-history coverage does not', [Math.round(own.coverage * 100), Math.round(own.ownCoverage * 100)], [90, 60])
+  check('the stand-in holding is named with what stood in for it', own.proxied.map(p => [p.ticker, p.name, p.proxy, Math.round(p.share * 100)]), [['F', 'Some Fund', 'XEQT.TO', 30]])
+  check('what could not be measured at all is still listed', own.uncovered, ['N'])
+  check('with no stand-ins, own coverage equals coverage and nothing is listed as proxied', (() => { const r = portfolioVolatility([{ ticker: 'A', value: 1, series: build(gen(0.1)) }], { now }); return [r.coverage === r.ownCoverage, r.proxied.length] })(), [true, 0])
+  check('the input builder carries each fund\'s name', volatilityItems([{ ticker: 'A', shares: 2, fund_name: 'Fund A' }, { ticker: 'A', shares: 1 }], [{ ticker: 'A', price: 1 }], {}).items[0].name, 'Fund A')
   check('a worst-12-month figure is provided', typeof one.worst12m === 'number' && one.worst12m < 0.2, true)
 }
 

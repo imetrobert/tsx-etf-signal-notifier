@@ -11,6 +11,7 @@
 
 import { createClient } from '@supabase/supabase-js'
 import { portfolioVolatility, volatilityItems } from '../src/lib/portfolioVol.js'
+import { proxyFor } from '../src/lib/fundProxies.js'
 
 const STRETCH_PCT = 10 // alert when price is this % above/below its 200-day MA
 
@@ -526,6 +527,25 @@ async function main() {
     // holdings are a small share, so the weights are close enough for this.
     const { items, problems } = volatilityItems(holdings.data, priceRows, heldSeries)
     problems.forEach(p => console.error(`portfolio volatility input problem: ${p}`))
+    // A fund with no history of its own is measured through an index ETF with the same mandate
+    // (see src/lib/fundProxies.js). Funds that have their own history are never touched by this.
+    const proxySeries = {}
+    const unproxied = []
+    for (const item of items) {
+      if (item.series && item.series.length) continue
+      const pick = proxyFor({ ticker: item.ticker, name: item.name })
+      const label = item.name || item.ticker
+      if (!pick) { unproxied.push(label); continue }
+      if (!pick.proxy) { unproxied.push(`${label} (${pick.why})`); continue }
+      try {
+        if (!proxySeries[pick.proxy]) proxySeries[pick.proxy] = heldSeries[pick.proxy] || (await fetchHistory(pick.proxy)).series
+        item.series = proxySeries[pick.proxy]
+        item.proxy = pick.proxy
+        item.proxyWhy = pick.why
+      } catch (e) {
+        unproxied.push(`${label} (stand-in ${pick.proxy} unavailable: ${e.message})`)
+      }
+    }
     const vol = portfolioVolatility(items)
     if (vol) {
       const { error: vErr } = await db.from('etf_portfolio_stats').upsert({
@@ -536,11 +556,17 @@ async function main() {
         window_end: vol.windowEnd,
         coverage: Math.round(vol.coverage * 1000) / 1000,
         worst_12m: vol.worst12m == null ? null : Math.round(vol.worst12m * 10000) / 10000,
-        details: { covered: vol.covered, uncovered: vol.uncovered, perHolding: vol.perHolding, history: vol.history },
+        details: {
+          covered: vol.covered, uncovered: vol.uncovered, perHolding: vol.perHolding, history: vol.history,
+          ownCoverage: Math.round(vol.ownCoverage * 1000) / 1000, proxied: vol.proxied, unproxied,
+        },
         updated_at: new Date().toISOString(),
       })
       if (vErr) console.error(`portfolio volatility save failed (run supabase/schema.sql to add the table): ${vErr.message}`)
-      else console.log(`Portfolio volatility: ${(vol.annualVol * 100).toFixed(1)}% a year over ${vol.months} months, ${Math.round(vol.coverage * 100)}% of value measured${vol.uncovered.length ? ` (no history: ${vol.uncovered.join(', ')})` : ''}`)
+      else {
+        const own = Math.round(vol.ownCoverage * 100), viaEtf = Math.round((vol.coverage - vol.ownCoverage) * 100)
+        console.log(`Portfolio volatility: ${(vol.annualVol * 100).toFixed(1)}% a year over ${vol.months} months, ${Math.round(vol.coverage * 100)}% of value measured (${own}% their own history${viaEtf ? ` + ${viaEtf}% through stand-in ETFs: ${[...new Set(vol.proxied.map(p => p.proxy))].join(', ')}` : ''})${unproxied.length ? `; not measured: ${unproxied.join('; ')}` : ''}`)
+      }
     } else {
       const withHistory = items.filter(i => i.series && i.series.length).length
       console.log(`Portfolio volatility: could not be measured — ${withHistory} of ${items.length} holdings had usable price history${problems.length ? ' (' + problems.join('; ') + ')' : ''}.`)
