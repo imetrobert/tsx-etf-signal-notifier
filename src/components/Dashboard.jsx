@@ -207,7 +207,7 @@ export default function Dashboard() {
       ? { snapshotDate: pensionSnap.snapshot_date, periodStart: pensionSnap.period_start, fundName: pensionSnap.fund_name, types: pensionSnap.types || [] }
       : null,
     volatility: volStats
-      ? { annualVol: Number(volStats.annual_vol), months: volStats.months, windowStart: volStats.window_start, windowEnd: volStats.window_end, coverage: volStats.coverage == null ? null : Number(volStats.coverage), history: (volStats.details || {}).history || null, worst12m: volStats.worst_12m == null ? null : Number(volStats.worst_12m), updatedAt: volStats.updated_at }
+      ? { annualVol: Number(volStats.annual_vol), months: volStats.months, windowStart: volStats.window_start, windowEnd: volStats.window_end, coverage: volStats.coverage == null ? null : Number(volStats.coverage), ownCoverage: (volStats.details || {}).ownCoverage ?? null, proxied: (volStats.details || {}).proxied || [], unproxied: (volStats.details || {}).unproxied || [], history: (volStats.details || {}).history || null, worst12m: volStats.worst_12m == null ? null : Number(volStats.worst_12m), updatedAt: volStats.updated_at }
       : null,
   })
   const plannerJson = JSON.stringify(plannerExport, null, 2)
@@ -674,6 +674,7 @@ export default function Dashboard() {
                 <div className="muted">
                   Measured from your holdings’ own price history — {plannerExport.volatility.months} months
                   ({plannerExport.volatility.window}), {plannerExport.volatility.coveragePct}% of value measured
+                  {plannerExport.portfolioStats && plannerExport.portfolioStats.proxyPct > 0 ? ` (${plannerExport.portfolioStats.ownCoveragePct}% own history + ${plannerExport.portfolioStats.proxyPct}% via stand-in ETFs)` : ''}
                   {plannerExport.volatility.worst12mPct != null ? ` · worst 12 months ${plannerExport.volatility.worst12mPct}%` : ''}
                 </div>
                 {plannerExport.portfolioStats && (
