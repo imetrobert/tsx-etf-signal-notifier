@@ -155,6 +155,18 @@ portfolio's value had history, and which holdings had none — or why it could n
 be measured. `node scripts/test-job.mjs` runs the real job against a simulated
 database and Yahoo and checks that row is written (it also proves the test would
 catch the job forgetting to select the units it weights holdings by).
+
+**Funds with no price history.** Most mutual funds (Fidelity, CI, Dynamic, RBC, TD…)
+have no free daily history, so a fund with none of its own is measured through an
+index ETF with the same mandate — global shares → XEQT, balanced/income → XBAL,
+Canadian dividend → XDV, US shares → XUU, gold → XGD, and so on
+(`src/lib/fundProxies.js`, matched on the fund's name). That captures asset-class
+swings and how the fund moves with the rest of your portfolio, but **not the
+manager's own record**, so the export reports how much of the portfolio is its own
+history versus stand-ins, lists each fund with what stood in for it, and lists
+funds it could not measure (a market-neutral fund deliberately gets no stand-in:
+an equity ETF would be wrong for it). To change one, edit `PROXY_OVERRIDES` in
+that file: a fund's code or name → an ETF ticker, or `null` for "don't proxy this".
 The same measurement also records a year-by-year second opinion (the portfolio's
 actual calendar-year returns, a rolling 12-month spread, and a longer look-back
 of up to ten years), because scaling monthly swings up can understate how far a
