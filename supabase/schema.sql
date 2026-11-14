@@ -127,25 +127,35 @@ alter table etf_prices enable row level security;
 alter table etf_signals enable row level security;
 alter table etf_signal_state enable row level security;
 
+-- Gated by the app-access check (was open to every signed-in user: "etf_holdings_auth").
 drop policy if exists "etf_holdings_auth" on etf_holdings;
-create policy "etf_holdings_auth" on etf_holdings
-  for all to authenticated using (true) with check (true);
+drop policy if exists "etf_holdings all (etf)" on etf_holdings;
+create policy "etf_holdings all (etf)" on etf_holdings
+  for all to authenticated using (public.has_app_access('etf')) with check (public.has_app_access('etf'));
 
+-- Gated by the app-access check (was open to every signed-in user: "etf_watchlist_auth").
 drop policy if exists "etf_watchlist_auth" on etf_watchlist;
-create policy "etf_watchlist_auth" on etf_watchlist
-  for all to authenticated using (true) with check (true);
+drop policy if exists "etf_watchlist all (etf)" on etf_watchlist;
+create policy "etf_watchlist all (etf)" on etf_watchlist
+  for all to authenticated using (public.has_app_access('etf')) with check (public.has_app_access('etf'));
 
+-- Gated by the app-access check (was open to every signed-in user: "etf_prices_read").
 drop policy if exists "etf_prices_read" on etf_prices;
-create policy "etf_prices_read" on etf_prices
-  for select to authenticated using (true);
+drop policy if exists "etf_prices select (etf)" on etf_prices;
+create policy "etf_prices select (etf)" on etf_prices
+  for select to authenticated using (public.has_app_access('etf'));
 
+-- Gated by the app-access check (was open to every signed-in user: "etf_signals_read").
 drop policy if exists "etf_signals_read" on etf_signals;
-create policy "etf_signals_read" on etf_signals
-  for select to authenticated using (true);
+drop policy if exists "etf_signals select (etf)" on etf_signals;
+create policy "etf_signals select (etf)" on etf_signals
+  for select to authenticated using (public.has_app_access('etf'));
 
+-- Gated by the app-access check (was open to every signed-in user: "etf_signal_state_read").
 drop policy if exists "etf_signal_state_read" on etf_signal_state;
-create policy "etf_signal_state_read" on etf_signal_state
-  for select to authenticated using (true);
+drop policy if exists "etf_signal_state select (etf)" on etf_signal_state;
+create policy "etf_signal_state select (etf)" on etf_signal_state
+  for select to authenticated using (public.has_app_access('etf'));
 
 -- Maps a fund name as printed on a Manulife statement to the ticker this app
 -- tracks it under, so importing next month's statement recognizes it without
@@ -159,9 +169,11 @@ create table if not exists etf_fund_map (
   updated_at timestamptz not null default now()
 );
 alter table etf_fund_map enable row level security;
+-- Gated by the app-access check (was open to every signed-in user: "etf_fund_map_auth").
 drop policy if exists "etf_fund_map_auth" on etf_fund_map;
-create policy "etf_fund_map_auth" on etf_fund_map
-  for all to authenticated using (true) with check (true);
+drop policy if exists "etf_fund_map all (etf)" on etf_fund_map;
+create policy "etf_fund_map all (etf)" on etf_fund_map
+  for all to authenticated using (public.has_app_access('etf')) with check (public.has_app_access('etf'));
 
 -- Fund codes already identified for the Manulife Wealth statement, so the
 -- import recognizes them without asking. Statements print no tickers, and a
@@ -197,9 +209,11 @@ create table if not exists etf_statement_imports (
   created_at timestamptz not null default now()
 );
 alter table etf_statement_imports enable row level security;
+-- Gated by the app-access check (was open to every signed-in user: "etf_statement_imports_auth").
 drop policy if exists "etf_statement_imports_auth" on etf_statement_imports;
-create policy "etf_statement_imports_auth" on etf_statement_imports
-  for all to authenticated using (true) with check (true);
+drop policy if exists "etf_statement_imports all (etf)" on etf_statement_imports;
+create policy "etf_statement_imports all (etf)" on etf_statement_imports
+  for all to authenticated using (public.has_app_access('etf')) with check (public.has_app_access('etf'));
 
 -- Taxable income a non-registered account has thrown off, read from a Manulife
 -- statement's Income Summary. Year-to-date at the statement's period end; the
@@ -217,9 +231,11 @@ create table if not exists etf_income_snapshots (
   unique (institution, account_type, period_end)
 );
 alter table etf_income_snapshots enable row level security;
+-- Gated by the app-access check (was open to every signed-in user: "etf_income_snapshots_auth").
 drop policy if exists "etf_income_snapshots_auth" on etf_income_snapshots;
-create policy "etf_income_snapshots_auth" on etf_income_snapshots
-  for all to authenticated using (true) with check (true);
+drop policy if exists "etf_income_snapshots all (etf)" on etf_income_snapshots;
+create policy "etf_income_snapshots all (etf)" on etf_income_snapshots
+  for all to authenticated using (public.has_app_access('etf')) with check (public.has_app_access('etf'));
 -- Supabase no longer grants Data API access to new public tables on its own.
 grant select, insert, update, delete on public.etf_income_snapshots to authenticated;
 grant all on public.etf_income_snapshots to service_role;
@@ -239,9 +255,11 @@ create table if not exists etf_portfolio_stats (
   updated_at timestamptz not null default now()
 );
 alter table etf_portfolio_stats enable row level security;
+-- Gated by the app-access check (was open to every signed-in user: "etf_portfolio_stats_read").
 drop policy if exists "etf_portfolio_stats_read" on etf_portfolio_stats;
-create policy "etf_portfolio_stats_read" on etf_portfolio_stats
-  for select to authenticated using (true);
+drop policy if exists "etf_portfolio_stats select (etf)" on etf_portfolio_stats;
+create policy "etf_portfolio_stats select (etf)" on etf_portfolio_stats
+  for select to authenticated using (public.has_app_access('etf'));
 -- Supabase no longer grants Data API access to new public tables on its own.
 grant select on public.etf_portfolio_stats to authenticated;
 grant all on public.etf_portfolio_stats to service_role;
@@ -266,9 +284,11 @@ create table if not exists etf_pension_snapshots (
   unique (plan, snapshot_date)
 );
 alter table etf_pension_snapshots enable row level security;
+-- Gated by the app-access check (was open to every signed-in user: "etf_pension_snapshots_auth").
 drop policy if exists "etf_pension_snapshots_auth" on etf_pension_snapshots;
-create policy "etf_pension_snapshots_auth" on etf_pension_snapshots
-  for all to authenticated using (true) with check (true);
+drop policy if exists "etf_pension_snapshots all (etf)" on etf_pension_snapshots;
+create policy "etf_pension_snapshots all (etf)" on etf_pension_snapshots
+  for all to authenticated using (public.has_app_access('etf')) with check (public.has_app_access('etf'));
 -- Supabase no longer grants Data API access to new public tables on its own.
 grant select, insert, update, delete on public.etf_pension_snapshots to authenticated;
 grant all on public.etf_pension_snapshots to service_role;
@@ -282,9 +302,11 @@ create table if not exists etf_market_regime (
   updated_at timestamptz not null default now()
 );
 alter table etf_market_regime enable row level security;
+-- Gated by the app-access check (was open to every signed-in user: "etf_regime_read").
 drop policy if exists "etf_regime_read" on etf_market_regime;
-create policy "etf_regime_read" on etf_market_regime
-  for select to authenticated using (true);
+drop policy if exists "etf_market_regime select (etf)" on etf_market_regime;
+create policy "etf_market_regime select (etf)" on etf_market_regime
+  for select to authenticated using (public.has_app_access('etf'));
 
 -- Starter watchlist of popular TSX ETFs (editable in the app).
 insert into etf_watchlist (ticker) values
