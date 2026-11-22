@@ -25,6 +25,7 @@ Actions secrets, Phone-only maintenance, Custom domain) — read only the sectio
 - Tests: `npm test` (holdings import)
 
 ## Cheap-change guide
+- Step-by-step recipes for the usual edits: `docs/common-edits.md` (open it first).
 - Holdings/watchlist changes: in the app, never in code.
 - Alert sensitivity: edit one constant in `scripts/run-signals.js`, commit to main.
 - Schedule: edit the `cron:` lines in `daily-signals.yml` (UTC).
