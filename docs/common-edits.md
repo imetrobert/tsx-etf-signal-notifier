@@ -1,6 +1,6 @@
 # Common edits — recipes (ETF Tracker, invest.imetrobert.com)
 
-Edit the one file named and commit to main. The site deploys on push (Actions → Deploy). Never
+Edit the one file named and commit to main. The site deploys on push (Actions → Deploy to GitHub Pages). Never
 commit a secret (service-role key and EmailJS keys live in Actions secrets). Free tier only.
 `supabase/schema.sql` auto-applies on push to main (apply-schema.yml) so it must stay idempotent.
 
