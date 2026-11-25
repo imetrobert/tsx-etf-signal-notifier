@@ -1,0 +1,34 @@
+name: Keepalive commit (stops GitHub pausing scheduled workflows)
+
+# GitHub switches off scheduled workflows in a public repo after 60 days with no
+# commits. This job makes one tiny bot commit twice a month so nobody has to do
+# it by hand. Leave it enabled.
+
+on:
+  schedule:
+    - cron: '0 8 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Touch keepalive marker
+        run: |
+          mkdir -p .github
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .github/.keepalive
+      - name: Commit and push
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "Keepalive Bot"
+          git add .github/.keepalive
+          if git diff --staged --quiet; then
+            echo "No change, skipping commit."
+          else
+            git commit -m "chore: keepalive ping"
+            git push
+          fi
